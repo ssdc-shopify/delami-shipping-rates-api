@@ -9,7 +9,8 @@
     <title><?= esc($this->renderSection('title') ?: 'Track your order') ?></title>
     <?php // A shipment page is per-shopper and changes as the parcel moves. ?>
     <meta name="robots" content="noindex, nofollow">
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet"
+          integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH" crossorigin="anonymous">
     <style>
         :root { --ink: #12151a; --muted: #6b7280; --line: #e5e7eb; --accent: #12151a; }
         body {

@@ -12,7 +12,7 @@ class StoreModel extends Model
     protected $useTimestamps = true;
 
     protected $allowedFields = [
-        'slug', 'name', 'merchant_id', 'shop_domain', 'api_key', 'api_secret', 'storefront_key',
+        'slug', 'name', 'merchant_id', 'shop_domain', 'api_key', 'api_secret', 'storefront_key', 'server_key_hash',
         'access_token', 'scopes', 'installed_at', 'uninstalled_at',
         'subsidi_ongkir', 'minimum_order',
         'jne_max_cart', 'spx_min_cart', 'insurance_min_cart',
@@ -103,6 +103,34 @@ class StoreModel extends Model
         $this->update($id, ['storefront_key' => $key]);
 
         return $key;
+    }
+
+    /** Prefix marking a value as a secret server key. */
+    public const SERVER_KEY_PREFIX = 'sk_';
+
+    /**
+     * Issue (or rotate) a store's secret server key and return it — the only
+     * time it is ever visible. Only its SHA-256 hash is stored, so a copy of
+     * the database does not hand out working keys.
+     */
+    public function rotateServerKey(int $id): string
+    {
+        $key = self::SERVER_KEY_PREFIX . bin2hex(random_bytes(24));
+
+        $this->update($id, ['server_key_hash' => hash('sha256', $key)]);
+
+        return $key;
+    }
+
+    /**
+     * Is $candidate this store's server key? Constant-time, and never true for
+     * a store that has not been issued one.
+     */
+    public static function isServerKey(array $store, string $candidate): bool
+    {
+        $stored = (string) ($store['server_key_hash'] ?? '');
+
+        return $stored !== '' && $candidate !== '' && hash_equals($stored, hash('sha256', $candidate));
     }
 
     /**

@@ -39,6 +39,11 @@ final class MockModeTest extends CIUnitTestCase
         // The Settings service caches what it has read for the life of the
         // process, while the database under it is rebuilt for every test.
         Services::resetSingle('settings');
+
+        // Shield's authenticator remembers who logged in, and it is shared
+        // across the run — so a login in an earlier test class would make the
+        // guest checks here pass or fail by test order.
+        Services::resetSingle('auth');
     }
 
     /** What the next request would see: a fresh service that re-reads the table. */

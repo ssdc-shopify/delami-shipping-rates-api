@@ -107,6 +107,7 @@ class AdminClient
                 quantity
                 sku
                 title
+                originalUnitPriceSet { shopMoney { amount } }
                 variant { inventoryItem { measurement { weight { value unit } } } }
               }
             }
@@ -407,10 +408,17 @@ class AdminClient
      * the tunnel restarts — and a stale one fails silently, as no rates at
      * checkout rather than an error anywhere.
      *
+     * One store can be connected to several copies of this app — a development
+     * tunnel beside production — and they all register under the same name,
+     * so "the service with this name" may be ANOTHER site's. Re-pointing it
+     * silently moved every checkout's rates to whichever site pressed the
+     * button last. A service whose callback is on a different host is now left
+     * alone and reported as 'foreign', unless $takeOver says to move it.
+     *
      * @return array{0: array<string, mixed>, 1: string} the service, and
-     *               'created' | 'updated' | 'unchanged'
+     *               'created' | 'updated' | 'unchanged' | 'foreign'
      */
-    public function ensureCarrierService(string $name, string $callbackUrl): array
+    public function ensureCarrierService(string $name, string $callbackUrl, bool $takeOver = false): array
     {
         $existing = null;
 
@@ -429,6 +437,19 @@ class AdminClient
             return [$existing, 'unchanged'];
         }
 
+        if (! $takeOver && self::origin((string) ($existing['callbackUrl'] ?? '')) !== self::origin($callbackUrl)) {
+            return [$existing, 'foreign'];
+        }
+
         return [$this->updateCarrierService($existing['id'], $name, $callbackUrl), 'updated'];
+    }
+
+    /** scheme://host[:port] of a URL — which site it belongs to. */
+    public static function origin(string $url): string
+    {
+        $parts = parse_url($url);
+
+        return strtolower(($parts['scheme'] ?? '') . '://' . ($parts['host'] ?? '')
+            . (isset($parts['port']) ? ':' . $parts['port'] : ''));
     }
 }

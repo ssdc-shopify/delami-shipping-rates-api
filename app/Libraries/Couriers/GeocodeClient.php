@@ -19,9 +19,21 @@ class GeocodeClient
 {
     private CouriersConfig $config;
 
+    /** Per-request ceiling in seconds; null uses couriers.proxyTimeout. */
+    private ?float $timeout = null;
+
     public function __construct(?CouriersConfig $config = null)
     {
         $this->config = $config ?? config(CouriersConfig::class);
+    }
+
+    /**
+     * Make the next requests give up after $seconds (null: the configured
+     * couriers.proxyTimeout) — the rate engine's share of Shopify's budget.
+     */
+    public function setTimeout(?float $seconds): void
+    {
+        $this->timeout = $seconds === null ? null : max(0.1, $seconds);
     }
 
     /**
@@ -45,7 +57,7 @@ class GeocodeClient
             return null;
         }
 
-        $client = single_service('curlrequest', ['timeout' => $this->config->proxyTimeout]);
+        $client = single_service('curlrequest', ['timeout' => $this->timeout ?? $this->config->proxyTimeout]);
 
         try {
             $response = $client->get($this->config->geocodeUrl, [
@@ -109,7 +121,7 @@ class GeocodeClient
             return null;
         }
 
-        $client = single_service('curlrequest', ['timeout' => $this->config->proxyTimeout]);
+        $client = single_service('curlrequest', ['timeout' => $this->timeout ?? $this->config->proxyTimeout]);
 
         try {
             $response = $client->get($this->config->geocodeUrl, [

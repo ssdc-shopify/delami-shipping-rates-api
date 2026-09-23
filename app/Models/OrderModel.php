@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use CodeIgniter\Database\Exceptions\DatabaseException;
 use CodeIgniter\Model;
 
 class OrderModel extends Model
@@ -51,9 +52,23 @@ class OrderModel extends Model
         $existing = $this->findByOrderId($data['order_id']);
 
         if ($existing === null) {
-            $this->insert($data);
+            try {
+                if ($this->insert($data) !== false) {
+                    return $this->findByOrderId($data['order_id']);
+                }
+            } catch (DatabaseException $e) {
+                // Handled below.
+            }
 
-            return $this->findByOrderId($data['order_id']);
+            // Shopify sends orders/create and orders/updated for a new order
+            // within milliseconds of each other, and both can find no row and
+            // both insert. The loser hits the unique index on order_id — that
+            // is the index doing its job, not a failure — and its data is then
+            // applied as an update like any other delivery.
+            $existing = $this->findByOrderId($data['order_id']);
+            if ($existing === null) {
+                throw $e ?? new DatabaseException('Could not store order ' . $data['order_id']);
+            }
         }
 
         $incoming = $data['shopify_updated_at'] ?? null;
@@ -66,6 +81,55 @@ class OrderModel extends Model
         $this->update($existing['id'], $data);
 
         return $this->find($existing['id']);
+    }
+
+    /** The columns that identify a customer, cleared by a redact request. */
+    public const PERSONAL_COLUMNS = [
+        'email', 'customer_name', 'ship_name', 'ship_phone',
+        'ship_address1', 'ship_address2', 'ship_zip',
+    ];
+
+    /**
+     * Erase a customer's personal data from their orders in one store, for
+     * Shopify's customers/redact. Returns how many orders were touched.
+     *
+     * Shopify names the orders to redact; any other order in the store under
+     * the same email is included too, since it is the same person's data. The
+     * order rows themselves stay — totals, statuses and the airway bill are
+     * shipping records, not personal data — and so do city and province,
+     * which identify nobody.
+     *
+     * @param list<int> $orderIds
+     */
+    public function redactCustomer(int $storeId, array $orderIds, string $email): int
+    {
+        $email = trim($email);
+        if ($orderIds === [] && $email === '') {
+            return 0;
+        }
+
+        $builder = $this->db->table($this->table)->where('store_id', $storeId)->groupStart();
+
+        if ($orderIds !== []) {
+            $builder->whereIn('order_id', $orderIds);
+        }
+        if ($email !== '') {
+            $builder->orWhere('LOWER(email)', strtolower($email));
+        }
+
+        $builder->groupEnd()->update(array_fill_keys(self::PERSONAL_COLUMNS, null) + [
+            'updated_at' => date('Y-m-d H:i:s'),
+        ]);
+
+        return $this->db->affectedRows();
+    }
+
+    /** Delete every stored order of one store, for Shopify's shop/redact. */
+    public function forgetStore(int $storeId): int
+    {
+        $this->db->table($this->table)->where('store_id', $storeId)->delete();
+
+        return $this->db->affectedRows();
     }
 
     /**

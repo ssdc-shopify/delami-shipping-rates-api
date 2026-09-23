@@ -42,4 +42,21 @@ abstract class BaseController extends Controller
         // Preload any models, libraries, etc, here.
         // $this->session = service('session');
     }
+
+    /**
+     * The request body as a JSON object, or null when it is not one.
+     *
+     * getJSON() throws on a malformed body, which surfaced as a 500 — a
+     * server fault — for what is the caller's mistake, and is a 400.
+     */
+    protected function jsonBody(): ?array
+    {
+        try {
+            $body = $this->request->getJSON(true);
+        } catch (\CodeIgniter\HTTP\Exceptions\HTTPException) {
+            return null;
+        }
+
+        return is_array($body) ? $body : null;
+    }
 }

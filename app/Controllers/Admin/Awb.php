@@ -7,23 +7,32 @@ use App\Libraries\Awb\AwbService;
 use App\Libraries\Awb\MockMode;
 use App\Libraries\Labels\LabelAssets;
 use App\Models\AirwaybillModel;
+use App\Models\OrderModel;
 use App\Models\StoreModel;
 
 class Awb extends BaseController
 {
     /**
-     * The store to act against, named by the Orders page that launched this.
+     * The store to act against: the one named in the request, else the one
+     * the order itself came from.
      *
-     * Waybills carry no store of their own, so leaving it implicit means
-     * booking against whichever store AwbService happens to pick first —
-     * wrong, and silently so, as soon as a second store is connected.
-     * Null falls back to that default, which is right for a single store.
+     * Waybills carry no store of their own, so leaving it implicit meant
+     * booking against whichever store AwbService picks first — wrong, and
+     * silently so, as soon as a second store is connected. Every order stored
+     * from a webhook records its store, so an unnamed request resolves to the
+     * right one. Null (an order this site never received) still falls back to
+     * AwbService's default, which is right for a single store.
      */
-    private function store(?string $slug): ?array
+    private function store(?string $slug, string $orderId): ?array
     {
         $slug = trim((string) $slug);
+        if ($slug !== '') {
+            return model(StoreModel::class)->findBySlug($slug);
+        }
 
-        return $slug === '' ? null : model(StoreModel::class)->findBySlug($slug);
+        $storeId = model(OrderModel::class)->findByOrderId($orderId)['store_id'] ?? null;
+
+        return empty($storeId) ? null : model(StoreModel::class)->find($storeId);
     }
 
     /** Back to the order list, for the same store. */
@@ -43,7 +52,7 @@ class Awb extends BaseController
      */
     public function generate(string $orderId)
     {
-        $store = $this->store($this->request->getPost('store'));
+        $store = $this->store($this->request->getPost('store'), $orderId);
 
         try {
             $service = new AwbService($store);
@@ -85,7 +94,7 @@ class Awb extends BaseController
     public function print(string $orderId)
     {
         try {
-            $service = new AwbService($this->store($this->request->getGet('store')));
+            $service = new AwbService($this->store($this->request->getGet('store'), $orderId));
 
             $row = model(AirwaybillModel::class)->findByOrderId($orderId);
             if ($row === null || empty($row['waybill'])) {

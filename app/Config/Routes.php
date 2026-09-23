@@ -17,7 +17,11 @@ $routes->post('track', 'Track::lookup');
 // ---------------------------------------------------------------
 // Shopify OAuth (app install) + webhooks
 // ---------------------------------------------------------------
-$routes->get('shopify/install', 'ShopifyOauth::install');
+// Admin-only: the redirect it answers with names the store's Shopify domain
+// and the app's Client ID, so an open route let anyone list every store by id.
+// The callback stays public — Shopify sends the browser there — and is
+// guarded by HMAC and the state held in the admin's own session.
+$routes->get('shopify/install', 'ShopifyOauth::install', ['filter' => ['session', 'group:admin,superadmin']]);
 $routes->get('shopify/oauth/callback', 'ShopifyOauth::callback', ['as' => 'shopify-oauth-callback']);
 $routes->post('shopify/webhooks/(:segment)', 'ShopifyWebhooks::handle/$1', ['as' => 'shopify-webhook']);
 
@@ -63,6 +67,7 @@ $routes->group('admin', ['filter' => ['session', 'group:admin,superadmin'], 'nam
     $routes->post('stores/order-webhooks/(:num)', 'Stores::orderWebhooks/$1');
     $routes->post('stores/settings/(:num)', 'Stores::settings/$1');
     $routes->post('stores/storefront-key/(:num)', 'Stores::storefrontKey/$1');
+    $routes->post('stores/server-key/(:num)', 'Stores::serverKey/$1');
     $routes->post('stores/carrier/(:num)', 'Stores::carrier/$1');
     $routes->get('rate-simulator', 'RateSimulator::index');
     $routes->get('settings', 'Settings::index');

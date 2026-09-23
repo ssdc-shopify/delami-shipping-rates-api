@@ -55,16 +55,45 @@ class ShopifyWebhooks extends BaseController
                 break;
 
             case 'customers-data-request':
+                // What this app holds on a customer is the order rows Shopify
+                // itself sent, so the merchant already has all of it. Logged
+                // by id only — the payload carries the customer's contact
+                // details, which a log file must not collect.
+                log_message('notice', 'Privacy: data request from {shop} for customer {customer}, orders {orders}', [
+                    'shop'     => $shopDomain,
+                    'customer' => (string) ($payload['customer']['id'] ?? '?'),
+                    'orders'   => implode(',', array_map('strval', (array) ($payload['orders_requested'] ?? []))),
+                ]);
+                break;
+
             case 'customers-redact':
+                $erased = model(OrderModel::class)->redactCustomer(
+                    (int) $store['id'],
+                    array_map('intval', (array) ($payload['orders_to_redact'] ?? [])),
+                    (string) ($payload['customer']['email'] ?? ''),
+                );
+                log_message('notice', 'Privacy: redacted {count} order(s) for customer {customer} of {shop}', [
+                    'count'    => $erased,
+                    'customer' => (string) ($payload['customer']['id'] ?? '?'),
+                    'shop'     => $shopDomain,
+                ]);
+                break;
+
             case 'shop-redact':
-                // Receipt is logged for the audit trail. Orders received by
-                // webhook ARE stored here (storeOrder), with the customer's
-                // name, email and address, so a redact request still needs
-                // acting on — not implemented yet.
-                log_message('info', 'GDPR webhook {topic} received from {shop}: {payload}', [
-                    'topic'   => $topic,
-                    'shop'    => $shopDomain,
-                    'payload' => json_encode($payload),
+                // Sent 48 hours after the app is uninstalled: everything this
+                // site holds for the shop goes — its orders, and the keys and
+                // credentials on its store row, which is deactivated.
+                model(OrderModel::class)->forgetStore((int) $store['id']);
+                model(StoreModel::class)->update($store['id'], [
+                    'access_token'    => null,
+                    'api_key'         => null,
+                    'api_secret'      => null,
+                    'storefront_key'  => null,
+                    'server_key_hash' => null,
+                    'active'          => 0,
+                ]);
+                log_message('notice', 'Privacy: shop redact for {shop} — orders deleted, credentials cleared', [
+                    'shop' => $shopDomain,
                 ]);
                 break;
 

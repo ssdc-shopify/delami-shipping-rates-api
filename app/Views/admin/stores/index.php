@@ -3,6 +3,22 @@
 <?= $this->section('title') ?>Stores — Delami Shipping<?= $this->endSection() ?>
 
 <?= $this->section('content') ?>
+<?php $takeover = session('carrier_takeover'); ?>
+<?php if (is_array($takeover)): ?>
+    <div class="alert alert-warning d-flex justify-content-between align-items-center gap-3 flex-wrap">
+        <div>
+            <strong>Checkout rates for <code><?= esc($takeover['slug']) ?></code> are served by another site</strong>
+            (<code><?= esc($takeover['current']) ?></code>). Taking over sends every checkout for this store to
+            this site instead.
+        </div>
+        <form method="post" action="<?= site_url('admin/stores/carrier/' . (int) $takeover['store']) ?>"
+              onsubmit="return confirm('Move checkout rates for <?= esc($takeover['slug'], 'js') ?> from <?= esc($takeover['current'], 'js') ?> to this site?')">
+            <?= csrf_field() ?>
+            <input type="hidden" name="take_over" value="1">
+            <button class="btn btn-warning btn-sm" type="submit">Take over checkout rates</button>
+        </form>
+    </div>
+<?php endif; ?>
 <div class="row g-4">
     <div class="col-lg-5">
         <div class="card">
@@ -263,6 +279,27 @@
                             using it stops quoting until it is updated.
                         </span>
                     <?php endif; ?>
+
+                    <hr class="my-4">
+
+                    <h6 class="text-uppercase text-muted small">Server key (secret)</h6>
+                    <p class="form-text mt-0">
+                        For a storefront that calls this app from its <strong>own server</strong>: send it as
+                        <code>X-Storefront-Secret</code> beside the publishable key, and the requests share a
+                        per-store limit instead of one IP's. Never put it in a browser or app bundle. Shown
+                        once when issued; only its hash is kept.
+                    </p>
+                    <p class="mb-2">
+                        <?php if (empty($store['server_key_hash'])): ?>
+                            <span class="badge bg-secondary">Not issued</span>
+                        <?php else: ?>
+                            <span class="badge bg-success">Issued</span>
+                        <?php endif; ?>
+                    </p>
+                    <button class="btn btn-sm <?= empty($store['server_key_hash']) ? 'btn-outline-primary' : 'btn-outline-danger' ?>"
+                            type="submit" form="serverkey-<?= $store['id'] ?>">
+                        <?= empty($store['server_key_hash']) ? 'Generate server key' : 'Rotate server key' ?>
+                    </button>
                 </div>
 
                 <div class="modal-footer justify-content-between">
@@ -281,6 +318,14 @@
           action="<?= site_url('admin/stores/storefront-key/' . $store['id']) ?>"
           <?php if (! empty($store['storefront_key'])): ?>
               onsubmit="return confirm('Rotate the storefront key for <?= esc($store['slug'], 'js') ?>?\n\nThe current key stops working immediately, and any Hydrogen or Expo build still using it will stop showing shipping rates.')"
+          <?php endif; ?>>
+        <?= csrf_field() ?>
+    </form>
+
+    <form id="serverkey-<?= $store['id'] ?>" method="post" class="d-none"
+          action="<?= site_url('admin/stores/server-key/' . $store['id']) ?>"
+          <?php if (! empty($store['server_key_hash'])): ?>
+              onsubmit="return confirm('Rotate the server key for <?= esc($store['slug'], 'js') ?>?\n\nThe current key stops working immediately; the storefront server must be updated with the new one.')"
           <?php endif; ?>>
         <?= csrf_field() ?>
     </form>

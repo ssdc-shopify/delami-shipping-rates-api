@@ -479,7 +479,12 @@ class TrackingService
         // Explicit formats first. strtotime reads "09-06-2020" as d-m-Y, which
         // is right for JNE, but leaving every courier to its guesswork is how
         // a day and a month quietly swap places.
-        foreach (['d-m-Y H:i:s', 'd-m-Y H:i', 'd-m-Y', 'Y-m-d H:i:s', 'Y-m-d\TH:i:sP', 'Y-m-d'] as $format) {
+        //
+        // Each format starts with "!", which resets every field the value does
+        // not carry. Without it createFromFormat() fills them from the current
+        // moment, and a scan dated "09-06-2020" came out stamped with whatever
+        // time the page happened to be loaded.
+        foreach (['!d-m-Y H:i:s', '!d-m-Y H:i', '!d-m-Y', '!Y-m-d H:i:s', '!Y-m-d\TH:i:sP', '!Y-m-d'] as $format) {
             $parsed = DateTimeImmutable::createFromFormat($format, $value);
             if ($parsed !== false) {
                 return $parsed->format('Y-m-d H:i:s');

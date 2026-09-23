@@ -20,11 +20,26 @@ class Couriers extends BaseConfig
     /** Upstream timeout in seconds. Keep short: Shopify's rate callback has a hard time budget. */
     public int $proxyTimeout = 8;
 
+    /**
+     * Total seconds a rate quote may spend on upstream calls. Every proxy,
+     * geocode and Grab call is capped at what is left of it. Under Shopify's
+     * 5s callback limit (the tier past 1,500 requests a minute), with room
+     * for PHP and the network hop.
+     */
+    public float $rateBudgetSeconds = 4.5;
+
     /** Cache TTL (seconds) for destination/zip lookups (stable data). */
     public int $destinationCacheTtl = 86400;
 
     /** Cache TTL (seconds) for rate lookups. */
     public int $rateCacheTtl = 3600;
+
+    /**
+     * Cache TTL (seconds) for a lookup that FAILED — timeout, 5xx, garbage.
+     * Short on purpose: a failure says nothing about the postcode, and caching
+     * it for the full TTL hid every parcel courier for that postcode for a day.
+     */
+    public int $failureCacheTtl = 60;
 
     // ------------------------------------------------------------------
     // JNE
@@ -89,6 +104,13 @@ class Couriers extends BaseConfig
 
     /** How long to cache the Grab bearer token, in minutes (matches the .NET backend). */
     public int $grabTokenCacheMinutes = 180;
+
+    /**
+     * How long a Grab BOOKING may take, in seconds. Longer than the quote
+     * timeout on purpose: giving up on a slow reply while Grab dispatches the
+     * rider anyway is how one order gets two riders.
+     */
+    public int $grabBookingTimeout = 30;
 
     /** Grab vehicle class for the quote + booking (BIKE / CAR). */
     public string $grabVehicleType = 'BIKE';

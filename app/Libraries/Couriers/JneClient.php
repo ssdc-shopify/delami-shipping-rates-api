@@ -92,7 +92,11 @@ class JneClient
                 'form_params' => $fields,
                 'headers'     => ['Accept' => 'application/json'],
                 'http_errors' => false,
-                'verify'      => false, // JNE endpoints use a non-standard cert chain
+                // Certificates are verified. This used to be switched off for
+                // a "non-standard chain", which sent the API key to anyone
+                // able to intercept the connection; JNE's HTTPS host now
+                // verifies cleanly (checked 2026-09-23), including the HTTPS
+                // trace host on :10205 that couriers.jneTraceUrl points at.
             ]);
 
             return json_decode($response->getBody(), true);

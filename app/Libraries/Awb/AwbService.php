@@ -180,6 +180,39 @@ class AwbService
     }
 
     /**
+     * The cart total the shopper was QUOTED on: every line at its original
+     * unit price, times its quantity, in whole IDR.
+     *
+     * That is exactly what Shopify's rate request sums — items[].price is the
+     * undiscounted unit price, discounts arrive separately — so it is the one
+     * figure that decides insurance the same way at booking as it did at
+     * checkout. Booking used the order total instead, which adds shipping and
+     * subtracts discounts: near the threshold a shopper could pay for
+     * insurance on a parcel then shipped without it, or the reverse.
+     *
+     * Falls back to the order subtotal when the lines carry no original price
+     * (an order fetched with an older query shape).
+     */
+    public function quotedCartTotal(array $order): float
+    {
+        $total = 0.0;
+        $known = false;
+
+        foreach ($order['lineItems']['nodes'] ?? [] as $line) {
+            $unit = $line['originalUnitPriceSet']['shopMoney']['amount'] ?? null;
+            if ($unit === null) {
+                continue;
+            }
+            $known = true;
+            $total += (float) $unit * (int) ($line['quantity'] ?? 0);
+        }
+
+        return $known
+            ? $total
+            : (float) ($order['currentSubtotalPriceSet']['shopMoney']['amount'] ?? 0);
+    }
+
+    /**
      * SPX service_type for the rate the shopper chose (base_info.service_type).
      */
     public function spxServiceType(array $order): int
@@ -325,8 +358,10 @@ class AwbService
             : strtoupper((string) $addr['address1']);
 
         $windows = $this->ninjaWindows();
-        $total   = (float) $order['currentTotalPriceSet']['shopMoney']['amount'];
-        $insured = $this->isInsured($total) ? (int) $total : 0;
+        // Insured on the quoted cart total, and declared at it: the shopper's
+        // insurance fee was computed on exactly that figure.
+        $cart    = $this->quotedCartTotal($order);
+        $insured = $this->isInsured($cart) ? (int) ceil($cart) : 0;
         $waybill = $this->couriers->ninjaWaybillPrefix . $numberId;
 
         $response = (new NinjaClient($this->couriers))->createOrder([
@@ -371,9 +406,8 @@ class AwbService
             ? $this->stripBrackets(strtoupper(($addr['address2'] ?? '') . ' ' . ($addr['address1'] ?? '')))
             : $this->stripBrackets((string) $addr['address1']);
 
-        $total    = (float) $order['currentTotalPriceSet']['shopMoney']['amount'];
-        $subtotal = (float) $order['currentSubtotalPriceSet']['shopMoney']['amount'];
-        $insured  = $this->isInsured($total);
+        $cart    = $this->quotedCartTotal($order);
+        $insured = $this->isInsured($cart);
 
         $serviceType = $this->spxServiceType($order);
 
@@ -401,26 +435,14 @@ class AwbService
             'zip'            => (string) $addr['zip'],
             'qty'            => $this->totalQty($order),
             'weight_kg'      => $this->weightKg($order),
-            'subtotal'       => round($insured ? $subtotal : 0),
-            'insurance_fee'  => $insured ? (new RateEngine())->insurance('spx', $total, $this->insuranceMinCart()) : 0,
+            'subtotal'       => $insured ? (int) ceil($cart) : 0,
+            'insurance_fee'  => $insured ? (new RateEngine())->insurance('spx', $cart, $this->insuranceMinCart()) : 0,
             'insurance_flag' => $insured ? 1 : 0,
             'pickup'         => $slot,
             'service_type'   => $serviceType,
         ];
 
-        $response = $spx->createOrder($shipment);
-
-        // Retry once with a unique suffix when SPX reports the ref as used.
-        $failMsg = $response['data']['fail_list'][0]['message'] ?? '';
-        if (str_contains($failMsg, 'order id has been used')) {
-            $shipment['order_ref'] .= 'R' . uniqid();
-            $response = $spx->createOrder($shipment);
-        }
-
-        $orderResult = $response['data']['orders'][0] ?? null;
-        if (empty($orderResult['tracking_no'])) {
-            throw new RuntimeException('SPX order creation failed: ' . json_encode($response));
-        }
+        $orderResult = self::spxBookedOrder($spx->createOrder($shipment), $shipment['order_ref']);
 
         $this->awbs->update($row['id'], [
             'waybill'         => $orderResult['tracking_no'],
@@ -430,6 +452,37 @@ class AwbService
         ]);
 
         return $this->awbs->find($row['id']);
+    }
+
+    /**
+     * The booked order from SPX's create-order reply, or an exception.
+     *
+     * "order id has been used" is NOT a reason to book again under another
+     * reference, which is what this used to do. It is the reply SPX gives when
+     * an earlier attempt for this order already succeeded — typically one whose
+     * response was lost, the very case the booking claim is left to expire
+     * for — so re-booking shipped a second parcel. It now stops, and says what
+     * to check.
+     *
+     * @return array<string, mixed> the orders[0] entry, carrying tracking_no
+     */
+    public static function spxBookedOrder(?array $response, string $orderRef): array
+    {
+        $failure = (string) ($response['data']['fail_list'][0]['message'] ?? '');
+
+        if (str_contains($failure, 'order id has been used')) {
+            throw new RuntimeException(
+                "SPX already has an order {$orderRef} — most likely booked by an earlier attempt whose reply was lost. "
+                . 'No second parcel was booked. Find its tracking number in the SPX portal before trying anything else.',
+            );
+        }
+
+        $booked = $response['data']['orders'][0] ?? null;
+        if (! is_array($booked) || empty($booked['tracking_no'])) {
+            throw new RuntimeException('SPX order creation failed: ' . json_encode($response));
+        }
+
+        return $booked;
     }
 
     private function generateJne(array $row, array $order, string $numberId): array
@@ -448,7 +501,8 @@ class AwbService
         $fullAddress = preg_replace('/[^A-Za-z0-9-]+/', ' ', str_replace('%', '-', ($addr['address1'] ?? '') . ' ' . ($addr['address2'] ?? '')));
         $lines       = str_split(trim($fullAddress), 30);
 
-        $insured = $this->isInsured($total);
+        $cart    = $this->quotedCartTotal($order);
+        $insured = $this->isInsured($cart);
 
         $response = (new JneClient($this->couriers))->generateCnote([
             'order_id'          => $numberId,
@@ -463,7 +517,9 @@ class AwbService
             'qty'               => $this->totalQty($order),
             'weight'            => $this->jneWeightKg($order),
             'goods_desc'        => 'CLOTHING',
-            'goods_value'       => $insured ? (int) $total : 0,
+            // Declared at the quoted cart total the insurance was paid on;
+            // COD below still collects the whole order.
+            'goods_value'       => $insured ? (int) ceil($cart) : 0,
             'insurance_flag'    => $insured ? 'Y' : 'N',
             'destination'       => $destination,
             'service'           => 'REG',
@@ -504,11 +560,10 @@ class AwbService
         }
 
         $address = $this->stripBrackets((string) ($addr['address1'] ?? ''));
-        $total   = (float) $order['currentTotalPriceSet']['shopMoney']['amount'];
-
         $response = (new GrabClient($this->couriers))->createDelivery([
             'merchantOrderID' => (string) $order['name'],
-            'cartTotal'       => (int) $total,
+            // The same package value the quote declared to Grab.
+            'cartTotal'       => (int) $this->quotedCartTotal($order),
             'weightKg'        => $this->weightKg($order),
             'dropAddress'     => trim(preg_replace('/\s+/', ' ', $address)) ?: (string) ($addr['city'] ?? ''),
             'dropLat'         => $lat,

@@ -5,7 +5,6 @@ namespace App\Controllers\Api;
 use App\Controllers\BaseController;
 use App\Libraries\Tracking\ShipmentLookup;
 use App\Libraries\Tracking\TrackingService;
-use App\Models\StoreModel;
 
 /**
  * Order tracking for headless storefronts (Hydrogen, Expo, the mock cart).
@@ -26,38 +25,23 @@ use App\Models\StoreModel;
  */
 class StorefrontTracking extends BaseController
 {
-    /**
-     * Lookups per minute per store, per IP.
-     *
-     * Lower than the rate endpoint's 60: a cart re-quotes on every edit, but
-     * nobody legitimately tracks a parcel ten times a minute, and each hit can
-     * reach a courier.
-     */
-    private const RATE_LIMIT = 15;
+    use StorefrontAccess;
 
     public function lookup()
     {
-        $store = model(StoreModel::class)->findByStorefrontKey(
-            (string) $this->request->getHeaderLine('X-Storefront-Key'),
-        );
-
-        if ($store === null) {
-            return $this->fail(401, 'invalid storefront key');
+        // Lower limits than the rate endpoint: nobody legitimately tracks a
+        // parcel ten times a minute, and each hit can reach a courier. See
+        // StorefrontAccess::STOREFRONT_LIMITS.
+        $store = $this->admitStorefront('track');
+        if (! is_array($store)) {
+            return $store;
         }
 
-        // Throttled per store, so one storefront being hammered cannot stop
-        // another's shoppers from tracking. The IP is hashed because it
-        // reaches a cache key, and an IPv6 address contains colons — which
-        // the cache handler rejects outright.
-        $throttler = service('throttler');
-        $bucket    = 'sf-track-' . $store['id'] . '-' . md5($this->request->getIPAddress());
-
-        if ($throttler->check($bucket, self::RATE_LIMIT, MINUTE) === false) {
-            return $this->fail(429, 'too many requests')
-                ->setHeader('Retry-After', (string) $throttler->getTokenTime());
+        $payload = $this->jsonBody();
+        if ($payload === null) {
+            return $this->fail(400, 'request body must be a JSON object');
         }
 
-        $payload   = $this->request->getJSON(true) ?? [];
         $reference = trim((string) ($payload['reference'] ?? ''));
         $email     = trim((string) ($payload['email'] ?? ''));
 

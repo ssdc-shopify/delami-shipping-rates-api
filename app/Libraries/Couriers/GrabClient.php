@@ -15,14 +15,30 @@ use Config\Couriers as CouriersConfig;
  *
  * Everything is null-safe: a token failure or a non-200 quote returns null so
  * the rate engine simply omits Grab rather than breaking the other couriers.
+ *
+ * Every call goes through send(), which attaches the cached token and, when
+ * Grab answers 401, fetches a fresh one and tries once more — a token that
+ * expired before its cache entry no longer hides GrabExpress for hours.
  */
 class GrabClient
 {
     private CouriersConfig $config;
 
+    /** Ceiling for quotes and lookups; null uses couriers.proxyTimeout. */
+    private ?float $timeout = null;
+
     public function __construct(?CouriersConfig $config = null)
     {
         $this->config = $config ?? config(CouriersConfig::class);
+    }
+
+    /**
+     * Make quotes and lookups give up after $seconds (null: the configured
+     * couriers.proxyTimeout). Booking keeps its own, longer timeout.
+     */
+    public function setTimeout(?float $seconds): void
+    {
+        $this->timeout = $seconds === null ? null : max(0.1, $seconds);
     }
 
     /**
@@ -36,48 +52,30 @@ class GrabClient
      */
     public function quote(array $origin, array $destination, array $packages): ?array
     {
-        $token = $this->accessToken();
-        if ($token === null) {
+        $reply = $this->send('POST', 'deliveries/quotes', [
+            'serviceType' => 'INSTANT',
+            'vehicleType' => $this->config->grabVehicleType,
+            'packages'    => $packages,
+            'origin'      => $origin,
+            'destination' => $destination,
+        ], $this->lookupTimeout());
+
+        if ($reply === null) {
             return null;
         }
 
-        $client = single_service('curlrequest', ['timeout' => $this->config->proxyTimeout]);
+        [$status, $data] = $reply;
 
-        try {
-            $response = $client->post(rtrim($this->config->grabBaseUrl, '/') . '/deliveries/quotes', [
-                'headers' => [
-                    // The token endpoint already includes the "Bearer " prefix.
-                    'Authorization' => $token,
-                    'Content-Type'  => 'application/json',
-                    'Accept'        => 'application/json',
-                ],
-                'body' => json_encode([
-                    'serviceType' => 'INSTANT',
-                    'vehicleType' => $this->config->grabVehicleType,
-                    'packages'    => $packages,
-                    'origin'      => $origin,
-                    'destination' => $destination,
-                ]),
-                'http_errors' => false,
+        if ($status !== 200) {
+            log_message('warning', 'GrabExpress quote failed (HTTP {code}): {body}', [
+                'code' => $status,
+                'body' => json_encode($data),
             ]);
 
-            if ($response->getStatusCode() !== 200) {
-                log_message('warning', 'GrabExpress quote failed (HTTP {code}): {body}', [
-                    'code' => $response->getStatusCode(),
-                    'body' => (string) $response->getBody(),
-                ]);
-
-                return null;
-            }
-
-            $quotes = json_decode($response->getBody(), true)['quotes'] ?? [];
-
-            return $quotes[0] ?? null;
-        } catch (\Throwable $e) {
-            log_message('warning', 'GrabExpress quote error: {msg}', ['msg' => $e->getMessage()]);
-
             return null;
         }
+
+        return $data['quotes'][0] ?? null;
     }
 
     /**
@@ -87,16 +85,16 @@ class GrabClient
      * ⚠️ A successful call DISPATCHES A REAL RIDER and charges the account.
      * Only reached with mock mode off — AwbService mocks it otherwise.
      *
+     * Uses couriers.grabBookingTimeout, not the quote timeout. A booking is
+     * not racing Shopify's checkout, and giving up early is the dangerous
+     * direction: Grab may have dispatched the rider while we report a
+     * failure, and the next attempt then dispatches a second one.
+     *
      * @param array $drop merchantOrderID, cartTotal, weightKg, dropAddress,
      *                    dropLat, dropLng, recipientFirst/Last/Phone/Email
      */
     public function createDelivery(array $drop): ?array
     {
-        $token = $this->accessToken();
-        if ($token === null) {
-            return null;
-        }
-
         $c    = $this->config;
         $body = [
             'merchantOrderID' => (string) $drop['merchantOrderID'],
@@ -139,35 +137,24 @@ class GrabClient
             ],
         ];
 
-        $client = single_service('curlrequest', ['timeout' => $this->config->proxyTimeout]);
+        $reply = $this->send('POST', 'deliveries', $body, (float) $c->grabBookingTimeout);
 
-        try {
-            $response = $client->post(rtrim($this->config->grabBaseUrl, '/') . '/deliveries', [
-                'headers' => [
-                    'Authorization' => $token,
-                    'Content-Type'  => 'application/json',
-                    'Accept'        => 'application/json',
-                ],
-                'body'        => json_encode($body),
-                'http_errors' => false,
+        if ($reply === null) {
+            return null;
+        }
+
+        [$status, $data] = $reply;
+
+        if ($status !== 200 && $status !== 201) {
+            log_message('error', 'GrabExpress create delivery failed (HTTP {code}): {body}', [
+                'code' => $status,
+                'body' => json_encode($data),
             ]);
-
-            $status = $response->getStatusCode();
-            if ($status !== 200 && $status !== 201) {
-                log_message('error', 'GrabExpress create delivery failed (HTTP {code}): {body}', [
-                    'code' => $status,
-                    'body' => (string) $response->getBody(),
-                ]);
-
-                return null;
-            }
-
-            return json_decode($response->getBody(), true);
-        } catch (\Throwable $e) {
-            log_message('error', 'GrabExpress create delivery error: {msg}', ['msg' => $e->getMessage()]);
 
             return null;
         }
+
+        return is_array($data) ? $data : null;
     }
 
     /**
@@ -180,87 +167,140 @@ class GrabClient
      */
     public function getDelivery(string $deliveryId): ?array
     {
-        $token = $this->accessToken();
-        if ($token === null) {
+        $reply = $this->send('GET', 'deliveries/' . rawurlencode($deliveryId), null, $this->lookupTimeout());
+
+        if ($reply === null) {
             return null;
         }
 
-        $client = single_service('curlrequest', ['timeout' => $this->config->proxyTimeout]);
+        [$status, $data] = $reply;
 
-        try {
-            $response = $client->get(
-                rtrim($this->config->grabBaseUrl, '/') . '/deliveries/' . rawurlencode($deliveryId),
-                [
-                    'headers' => [
-                        'Authorization' => $token,
-                        'Accept'        => 'application/json',
-                    ],
-                    'http_errors' => false,
-                ],
-            );
+        if ($status !== 200) {
+            log_message('error', 'GrabExpress delivery lookup failed for {id} (HTTP {code}): {body}', [
+                'id'   => $deliveryId,
+                'code' => $status,
+                'body' => json_encode($data),
+            ]);
 
-            if ($response->getStatusCode() !== 200) {
-                log_message('error', 'GrabExpress delivery lookup failed for {id} (HTTP {code}): {body}', [
-                    'id'   => $deliveryId,
-                    'code' => $response->getStatusCode(),
-                    'body' => (string) $response->getBody(),
-                ]);
+            return null;
+        }
 
+        return is_array($data) ? $data : null;
+    }
+
+    /**
+     * One authorised call to Grab: [status, decoded body], or null when no
+     * token could be had or the request never completed.
+     *
+     * A 401 means Grab no longer accepts the cached token — it can expire
+     * before its cache entry does — so the token is dropped, a fresh one is
+     * fetched, and the call is made once more. Safe for a booking too: a 401
+     * is a refusal, not a delivery.
+     *
+     * @return array{0: int, 1: mixed}|null
+     */
+    private function send(string $method, string $path, ?array $body, float $timeout): ?array
+    {
+        $url = rtrim($this->config->grabBaseUrl, '/') . '/' . $path;
+
+        foreach ([false, true] as $fresh) {
+            $token = $this->accessToken($timeout, $fresh);
+            if ($token === null) {
                 return null;
             }
 
-            return json_decode($response->getBody(), true);
+            $headers = [
+                // The token endpoint already includes the "Bearer " prefix.
+                'Authorization' => $token,
+                'Accept'        => 'application/json',
+            ];
+            if ($body !== null) {
+                $headers['Content-Type'] = 'application/json';
+            }
+
+            $response = $this->request($method, $url, $headers, $body === null ? null : json_encode($body), $timeout);
+            if ($response === null) {
+                return null;
+            }
+
+            if ($response['code'] === 401 && ! $fresh) {
+                log_message('info', 'GrabExpress rejected the cached token — fetching a fresh one.');
+
+                continue;
+            }
+
+            return [$response['code'], json_decode($response['body'], true)];
+        }
+
+        return null;
+    }
+
+    /**
+     * A Grab bearer token (including the "Bearer " prefix), or null.
+     *
+     * Cached for grabTokenCacheMinutes so a burst of quotes shares one token;
+     * $fresh skips the cache and replaces it.
+     */
+    private function accessToken(float $timeout, bool $fresh = false): ?string
+    {
+        $cache = service('cache');
+        $key   = 'grab_token_' . md5($this->config->grabTokenUrl);
+
+        if (! $fresh) {
+            $cached = $cache->get($key);
+            if (is_string($cached) && $cached !== '') {
+                return $cached;
+            }
+        }
+
+        $response = $this->request('GET', $this->config->grabTokenUrl, ['Accept' => 'application/json'], null, $timeout);
+
+        if ($response === null || $response['code'] !== 200) {
+            log_message('warning', 'GrabExpress token failed (HTTP {code})', ['code' => $response['code'] ?? 0]);
+
+            return null;
+        }
+
+        $token = json_decode($response['body'], true)['token'] ?? null;
+        if (! is_string($token) || $token === '') {
+            return null;
+        }
+
+        $cache->save($key, $token, max(60, $this->config->grabTokenCacheMinutes * 60));
+
+        return $token;
+    }
+
+    /**
+     * The one place that touches the network: ['code' => int, 'body' => string],
+     * or null when the request did not complete. A test answers in its place.
+     *
+     * @return array{code: int, body: string}|null
+     */
+    protected function request(string $method, string $url, array $headers, ?string $body, float $timeout): ?array
+    {
+        try {
+            $options = ['headers' => $headers, 'http_errors' => false];
+            if ($body !== null) {
+                $options['body'] = $body;
+            }
+
+            $response = single_service('curlrequest', ['timeout' => $timeout])->request($method, $url, $options);
+
+            return ['code' => $response->getStatusCode(), 'body' => (string) $response->getBody()];
         } catch (\Throwable $e) {
-            log_message('error', 'GrabExpress delivery lookup error for {id}: {msg}', [
-                'id'  => $deliveryId,
-                'msg' => $e->getMessage(),
+            log_message('warning', 'GrabExpress {method} {url} error: {msg}', [
+                'method' => $method,
+                'url'    => $url,
+                'msg'    => $e->getMessage(),
             ]);
 
             return null;
         }
     }
 
-    /**
-     * A cached Grab bearer token (including the "Bearer " prefix), or null.
-     *
-     * Cached for grabTokenCacheMinutes so a burst of quotes shares one token.
-     */
-    private function accessToken(): ?string
+    private function lookupTimeout(): float
     {
-        $cache = service('cache');
-        $key   = 'grab_token_' . md5($this->config->grabTokenUrl);
-
-        $cached = $cache->get($key);
-        if (is_string($cached) && $cached !== '') {
-            return $cached;
-        }
-
-        $client = single_service('curlrequest', ['timeout' => $this->config->proxyTimeout]);
-
-        try {
-            $response = $client->get($this->config->grabTokenUrl, [
-                'headers'     => ['Accept' => 'application/json'],
-                'http_errors' => false,
-            ]);
-
-            if ($response->getStatusCode() !== 200) {
-                log_message('warning', 'GrabExpress token failed (HTTP {code})', ['code' => $response->getStatusCode()]);
-
-                return null;
-            }
-
-            $token = json_decode($response->getBody(), true)['token'] ?? null;
-            if (! is_string($token) || $token === '') {
-                return null;
-            }
-
-            $cache->save($key, $token, max(60, $this->config->grabTokenCacheMinutes * 60));
-
-            return $token;
-        } catch (\Throwable $e) {
-            log_message('warning', 'GrabExpress token error: {msg}', ['msg' => $e->getMessage()]);
-
-            return null;
-        }
+        return $this->timeout ?? (float) $this->config->proxyTimeout;
     }
 }

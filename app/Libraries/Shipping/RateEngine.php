@@ -9,13 +9,12 @@ use App\Models\StoreModel;
 use Config\Couriers as CouriersConfig;
 
 /**
- * Multi-courier shipping rate engine (JNE / Ninja Xpress / SPX).
+ * Multi-courier shipping rate engine (JNE / Ninja Xpress / SPX / GrabExpress).
  *
- * Port of the legacy CI3 calculate_tariff/add_tariff with fixes:
  *  - total_price returned in SUBUNITS (IDR x100) per the CarrierService spec
- *  - each courier uses its own ETD (legacy reused JNE's for Ninja)
- *  - upstream lookups run in parallel with short timeouts + caching
- *  - courier selection thresholds are named constants
+ *  - each courier uses its own ETD
+ *  - upstream lookups run in parallel, cached, inside one time budget
+ *  - courier selection thresholds are per store, with config defaults
  */
 class RateEngine
 {
@@ -36,6 +35,34 @@ class RateEngine
     public static function billableWeightKg(int $grams): int
     {
         return max(1, (int) ceil($grams / 1000));
+    }
+
+    /**
+     * Total weight (grams) and cart value (whole IDR) of rate-request items —
+     * the one rule both endpoints use, so the cart page and checkout cannot
+     * price the same basket from different numbers.
+     *
+     * Each item is {grams, price (IDR subunits, per unit), quantity}, exactly
+     * as Shopify's rate request sends it. A missing quantity is 1; a negative
+     * weight, price or quantity counts as 0 rather than shrinking the cart.
+     *
+     * @return array{0: int, 1: float} [grams, cart total in whole IDR]
+     */
+    public static function cartFromItems(array $items): array
+    {
+        $grams    = 0;
+        $subunits = 0;
+
+        foreach ($items as $item) {
+            if (! is_array($item)) {
+                continue;
+            }
+            $quantity  = max(0, (int) ($item['quantity'] ?? 1));
+            $grams    += max(0, (int) ($item['grams'] ?? 0)) * $quantity;
+            $subunits += max(0, (int) ($item['price'] ?? 0)) * $quantity;
+        }
+
+        return [$grams, (float) ($subunits / 100)];
     }
 
     /**
@@ -98,21 +125,59 @@ class RateEngine
         'tangsel' => 'tangerang selatan',
     ];
 
+    /**
+     * The least time worth starting an upstream call with. Below this the
+     * call is skipped: it could not finish, and would only push the whole
+     * reply past Shopify's deadline.
+     */
+    private const MIN_CALL_SECONDS = 0.3;
+
     private WidgetProxyClient $proxy;
     private CouriersConfig $config;
     private GrabClient $grab;
     private GeocodeClient $geocoder;
+
+    /** @var \Closure(): float seconds, for the time budget; injectable for tests */
+    private \Closure $clock;
 
     public function __construct(
         ?WidgetProxyClient $proxy = null,
         ?CouriersConfig $config = null,
         ?GrabClient $grab = null,
         ?GeocodeClient $geocoder = null,
+        ?\Closure $clock = null,
     ) {
         $this->config   = $config ?? config(CouriersConfig::class);
         $this->proxy    = $proxy ?? new WidgetProxyClient($this->config);
         $this->grab     = $grab ?? new GrabClient($this->config);
         $this->geocoder = $geocoder ?? new GeocodeClient($this->config);
+        $this->clock    = $clock ?? static fn (): float => microtime(true);
+    }
+
+    /**
+     * Cap $client's next calls at the time left before $deadline, or report
+     * that too little is left to start one. A null deadline (a direct call
+     * with no budget) leaves the client's configured timeout alone.
+     *
+     * @param GeocodeClient|GrabClient|WidgetProxyClient $client
+     */
+    private function budget(object $client, ?float $deadline): bool
+    {
+        if ($deadline === null) {
+            return true;
+        }
+
+        $left = $deadline - ($this->clock)();
+
+        if ($left < self::MIN_CALL_SECONDS) {
+            log_message('warning', 'Rate budget spent — skipping {client}', ['client' => get_parent_class($client) ?: $client::class]);
+
+            return false;
+        }
+
+        $client->setTimeout($left);
+
+        return true;
     }
 
     /**
@@ -134,6 +199,11 @@ class RateEngine
         // — a stale storefront build, a hand-made request — and a shopper
         // seeing every rate is a far better failure than one who can't check
         // out at all. CarrierRates logs when it could not find a method.
+        //
+        // Normalised first, as the checkout callback already does with the line
+        // property: "Standard" and "standard" are the same choice, and the two
+        // endpoints must not disagree about it.
+        $method = is_string($method) ? strtolower(trim($method)) : null;
         $method = in_array($method, self::METHODS, true) ? $method : null;
 
         // ---- CLICK AND COLLECT: nothing is delivered, so nothing is quoted.
@@ -156,40 +226,66 @@ class RateEngine
 
         $rates = [];
 
-        // ---- GRABEXPRESS - INSTANT: coordinate-based, on-demand.
-        // Priced by Grab on the drop-off coordinates, not a zip, so it is
-        // quoted first and is the only rate a coordinates-but-no-zip request
-        // can return. Needs a pin, or a street address it can geocode into one
-        // — the CarrierService callback sends the latter.
+        // ---- THE TIME BUDGET. Shopify waits at most 10s for this callback —
+        // 5s once a shop passes 1,500 requests a minute, 3s past 3,000 — and a
+        // late answer is no answer: checkout falls back to backup rates, and a
+        // store with none offers the shopper nothing. Each upstream call used
+        // to get a flat 8s, one after another, so one slow dependency could
+        // spend 40s. Every call is now capped at what is left of this budget.
+        $deadline = ($this->clock)() + $this->config->rateBudgetSeconds;
+
+        // ---- JNE / NINJA / SPX first. They are the core offer and resolve by
+        // postcode; instant delivery is GrabExpress alone, so it skips them.
+        if ($method !== self::METHOD_INSTANT && $zip !== '') {
+            $rates = $this->parcelRates($store, $zip, $weightKg, $cartTotal, $subsidy, $deadline);
+        }
+
+        // ---- GRABEXPRESS - INSTANT: coordinate-based, on-demand, priced on
+        // the drop-off point, and quoted with whatever time is left. The only
+        // rate a coordinates-but-no-zip request can return. Needs a pin, or a
+        // street address it can geocode into one — the checkout callback
+        // sends the latter.
         //
         // Skipped outright on the standard method — that also spares the
-        // geocode and the Grab quote call, which is the bulk of the latency
-        // on a native-checkout request that was never going to use them.
+        // geocode and the Grab quote call, which the caller cannot use.
         if ($method !== self::METHOD_STANDARD) {
-            $grab = $this->grabRate($destination, $weightKg, $cartTotal, $subsidy);
+            $grab = $this->grabRate($destination, $weightKg, $cartTotal, $subsidy, $deadline);
             if ($grab !== null) {
                 $rates[] = $grab;
             }
         }
 
-        // Instant is GrabExpress and nothing else. Returning here also skips
-        // the five widget-proxy lookups below, which the caller cannot use.
-        if ($method === self::METHOD_INSTANT) {
-            return $rates;
-        }
+        // Dedupe (service_code) and sort cheapest first.
+        $seen = [];
+        $rates = array_values(array_filter($rates, static function ($rate) use (&$seen) {
+            if (isset($seen[$rate['service_code']])) {
+                return false;
+            }
+            $seen[$rate['service_code']] = true;
 
-        // The remaining couriers (JNE / Ninja / SPX) resolve by postal code.
-        // With no zip there is nothing more to add.
-        if ($zip === '') {
-            return $rates;
-        }
+            return true;
+        }));
 
+        usort($rates, static fn ($a, $b) => $a['total_price'] <=> $b['total_price']);
+
+        return $rates;
+    }
+
+    /**
+     * JNE / Ninja / SPX for a postcode: two waves of parallel proxy lookups,
+     * each capped at the time left before $deadline.
+     */
+    private function parcelRates(array $store, string $zip, int $weightKg, float $cartTotal, int $subsidy, float $deadline): array
+    {
         // Thresholds are per store (admin-editable), falling back to config.
         $jneMaxCart       = StoreModel::threshold($store, 'jne_max_cart', 'jneMaxCart');
         $spxMinCart       = StoreModel::threshold($store, 'spx_min_cart', 'spxMinCart');
         $insuranceMinCart = StoreModel::threshold($store, 'insurance_min_cart', 'insuranceMinCart');
 
         // Wave 1: independent destination lookups, in parallel.
+        if (! $this->budget($this->proxy, $deadline)) {
+            return [];
+        }
         $geo = $this->proxy->getMany([
             'jne'   => "get_code_destination/{$zip}",
             'ninja' => "get_nxid/{$zip}",
@@ -210,7 +306,12 @@ class RateEngine
             $ratePaths['spxReguler'] = "ratecard/{$spxCity}/REGULAR";
         }
 
-        $quotes = $ratePaths === [] ? [] : $this->proxy->getMany($ratePaths, $this->config->rateCacheTtl);
+        if ($ratePaths === [] || ! $this->budget($this->proxy, $deadline)) {
+            return [];
+        }
+        $quotes = $this->proxy->getMany($ratePaths, $this->config->rateCacheTtl);
+
+        $rates = [];
 
         // ---- JNE REG: cheap carts only, or fallback when Ninja has no coverage.
         $jneRate = (float) ($quotes['jne']['rates'] ?? 0);
@@ -262,19 +363,6 @@ class RateEngine
                 }
             }
         }
-
-        // Dedupe (service_code) and sort cheapest first.
-        $seen = [];
-        $rates = array_values(array_filter($rates, static function ($rate) use (&$seen) {
-            if (isset($seen[$rate['service_code']])) {
-                return false;
-            }
-            $seen[$rate['service_code']] = true;
-
-            return true;
-        }));
-
-        usort($rates, static fn ($a, $b) => $a['total_price'] <=> $b['total_price']);
 
         return $rates;
     }
@@ -367,7 +455,7 @@ class RateEngine
      * @param array $destination may carry latitude/longitude, else a street
      *                           address (address1/city/…) that is geocoded
      */
-    private function grabRate(array $destination, int $weightKg, float $cartTotal, int $subsidy): ?array
+    private function grabRate(array $destination, int $weightKg, float $cartTotal, int $subsidy, ?float $deadline = null): ?array
     {
         if (! $this->config->grabEnabled) {
             return null;
@@ -385,6 +473,9 @@ class RateEngine
             // geocoding the address. A street address is required; a city/zip
             // alone is too coarse to price an instant courier on.
             if (trim((string) ($destination['address1'] ?? '')) === '' || $dropAddress === '') {
+                return null;
+            }
+            if (! $this->budget($this->geocoder, $deadline)) {
                 return null;
             }
             $geo = $this->geocoder->geocode($dropAddress);
@@ -432,6 +523,9 @@ class RateEngine
             'dimensions' => ['weight' => $weightKg],
         ]];
 
+        if (! $this->budget($this->grab, $deadline)) {
+            return null;
+        }
         $quote = $this->grab->quote($origin, $drop, $packages);
         if ($quote === null) {
             return null;

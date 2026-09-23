@@ -39,6 +39,7 @@ needs a map pin).
 | Thing | Where |
 |---|---|
 | **Publishable key** `pk_…` (per store) | Admin → Stores → Edit settings → Generate key |
+| **Server key** `sk_…` (per store, server-side callers only) | Admin → Stores → Edit settings → Generate server key |
 | **CORS origin** (web only) | Add your domain to `cors.storefrontOrigins` in the server `.env` |
 | **CarrierService registered** (for native checkout) | Admin → Stores → Register |
 
@@ -46,8 +47,22 @@ The publishable key is **not a secret** — it identifies and rate-limits a
 caller, nothing more. It's safe in a browser bundle or a mobile app. Rotate it
 in Admin if a build leaks somewhere it shouldn't.
 
-**Base URL** in these docs: `https://YOUR-APP-DOMAIN` (e.g.
-`https://delami-shipping.wesell.biz.id`).
+**Calling from your own server** (Hydrogen loaders/actions, a BFF): send the
+**server key** as `X-Storefront-Secret` beside `X-Storefront-Key`. Every
+shopper's request then comes from your server's one IP, so the per-IP limits
+below would ration the whole site to one person's allowance; a verified server
+is limited per store instead. The server key **is** a secret — never ship it in
+a browser or app bundle. It is shown once when issued (only a hash is kept);
+rotate it in Admin if it leaks. A wrong `X-Storefront-Secret` is answered `401`,
+not quietly treated as a browser.
+
+| Endpoint | Browser / app (per store + IP) | Server with `X-Storefront-Secret` (per store) |
+|---|---|---|
+| `/api/storefront/rates` | 60 / min | 1,200 / min |
+| `/api/storefront/geocode` | 20 / min | 600 / min |
+| `/api/storefront/track` | 15 / min | 300 / min |
+
+**Base URL** in these docs: `https://YOUR-APP-DOMAIN`.
 
 ---
 
@@ -111,9 +126,9 @@ subunits — divide by 100 to display.
 
 | Status | Meaning | What to do |
 |---|---|---|
-| `401` | Bad/missing `X-Storefront-Key` | Fix the key |
-| `400` | Bad payload (no destination, no items) | Fix the body |
-| `429` | Throttled (60/min per store+IP) | Back off; honour `Retry-After` |
+| `401` | Bad/missing `X-Storefront-Key`, or a wrong `X-Storefront-Secret` | Fix the key |
+| `400` | Bad payload (not JSON, no destination, no items) | Fix the body |
+| `429` | Throttled (see §2 for the limits) | Back off; honour `Retry-After` |
 | `503` | Rate engine/courier proxy down | Retryable |
 | `200` + `{"rates": []}` | Valid answer: "can't ship this" | Show "no rates", suggest a different cart/address |
 

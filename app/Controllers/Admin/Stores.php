@@ -178,12 +178,28 @@ class Stores extends BaseController
         $callbackUrl = rtrim(config('App')->baseURL, '/')
             . '/carrier/rates/' . $store['slug'] . '?token=' . $config->carrierCallbackToken;
 
+        $takeOver = $this->request->getPost('take_over') === '1';
+
         try {
             [$service, $action] = (new AdminClient($store))
-                ->ensureCarrierService($config->carrierServiceName, $callbackUrl);
+                ->ensureCarrierService($config->carrierServiceName, $callbackUrl, $takeOver);
         } catch (\Throwable $e) {
             return redirect()->to(site_url('admin/stores'))
                 ->with('error', 'Carrier service registration failed: ' . $e->getMessage());
+        }
+
+        if ($action === 'foreign') {
+            // Another site owns the checkout rates for this store. Moving them
+            // here is a real decision, so the page offers it as one.
+            return redirect()->to(site_url('admin/stores'))
+                ->with('error', "Checkout rates for {$store['slug']} are served by another site: "
+                    . AdminClient::origin((string) $service['callbackUrl'])
+                    . '. Nothing was changed. Take over only if this site should now answer checkout for this store.')
+                ->with('carrier_takeover', [
+                    'store'   => (int) $store['id'],
+                    'slug'    => $store['slug'],
+                    'current' => AdminClient::origin((string) $service['callbackUrl']),
+                ]);
         }
 
         return redirect()->to(site_url('admin/stores'))->with('message', match ($action) {
@@ -222,6 +238,33 @@ class Stores extends BaseController
             $rotated
                 ? 'Storefront key rotated for ' . $store['slug'] . ' — the previous key stopped working immediately.'
                 : 'Storefront key issued for ' . $store['slug'] . '.',
+        );
+    }
+
+    /**
+     * POST /admin/stores/server-key/{id}
+     *
+     * Issue or rotate the store's SECRET server key — the one a storefront's
+     * own server sends as X-Storefront-Secret to get a per-store rate limit
+     * instead of a per-IP one. Shown once, here; only its hash is kept, so a
+     * lost key is replaced, not recovered. Rotating revokes the old one.
+     */
+    public function serverKey(int $id)
+    {
+        $stores = model(StoreModel::class);
+        $store  = $stores->find($id);
+
+        if ($store === null) {
+            return redirect()->to(site_url('admin/stores'))->with('error', 'Unknown store.');
+        }
+
+        $rotated = ! empty($store['server_key_hash']);
+        $key     = $stores->rotateServerKey($id);
+
+        return redirect()->to(site_url('admin/stores'))->with(
+            'message',
+            ($rotated ? 'Server key rotated' : 'Server key issued') . " for {$store['slug']}. Copy it now — it is not shown again: {$key}"
+                . ($rotated ? ' (the previous key stopped working immediately).' : ''),
         );
     }
 

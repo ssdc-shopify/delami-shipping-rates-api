@@ -47,8 +47,10 @@ class LjrClient
                 ],
                 'headers'     => ['Accept' => 'application/json'],
                 'http_errors' => false,
-                // LJR serves the API on :10433 behind a chain PHP does not carry.
-                'verify'      => false,
+                // Certificates are verified: the API key rides in the query
+                // string, so an unverified connection handed it to anyone in
+                // the middle. LJR's :10433 host verifies cleanly (checked
+                // 2026-09-23).
             ]);
 
             if ($response->getStatusCode() !== 200) {

@@ -59,7 +59,7 @@ class CarrierRates extends BaseController
             return $this->response->setStatusCode(404)->setJSON(['error' => 'unknown store']);
         }
 
-        $payload = $this->request->getJSON(true);
+        $payload = $this->jsonBody();
         $rate    = $payload['rate'] ?? null;
         if (! is_array($rate) || empty($rate['destination'])) {
             return $this->response->setStatusCode(400)->setJSON(['error' => 'malformed rate request']);
@@ -213,15 +213,7 @@ class CarrierRates extends BaseController
     private function extractTotals(array $rate): array
     {
         if (! empty($rate['items']) && is_array($rate['items'])) {
-            $grams = 0;
-            $price = 0;
-            foreach ($rate['items'] as $item) {
-                $qty    = (int) ($item['quantity'] ?? 1);
-                $grams += (int) ($item['grams'] ?? 0) * $qty;
-                $price += (int) ($item['price'] ?? 0) * $qty; // subunits
-            }
-
-            return [$grams, $price / 100];
+            return RateEngine::cartFromItems($rate['items']);
         }
 
         return [

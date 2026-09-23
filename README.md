@@ -1,16 +1,21 @@
-# Delami Shipping — CI4
+# Delami Shipping Rates API
 
-CodeIgniter 4.7 port of the legacy `executive_reg_shipping` (CI3) shipping features:
-multi-courier shipping rates for Shopify (CarrierService) and AWB generation/printing
-for JNE, Ninja Xpress, and SPX. Admin backend secured with CodeIgniter Shield.
+Shipping for Delami's Shopify stores: multi-courier rates at checkout and in
+headless carts (JNE, Ninja Xpress, SPX, GrabExpress instant, Click and
+Collect), airway-bill booking and label printing, and customer order
+tracking. Built on CodeIgniter 4, with an admin backend secured by Shield.
 
 ## Stack
 
-- PHP 8.4, CodeIgniter 4.7, MySQL (`delami_shipping_ci4`)
-- Shield (session auth, `admin` group), all secrets in `.env`
-- Shopify Admin **GraphQL** API (2025-07), OAuth 2.0 authorization code grant
-- Rate lookups via the Delami widget proxy (parallelized + cached)
-- Local barcode (Code128 SVG) + QR generation — no external barcode services
+- PHP 8.4, CodeIgniter 4.7
+- SQLite by default (`writable/database/delami.sqlite`); MySQL with
+  `DB_CONNECTION=mysql`
+- Shield session auth (`admin` group), public registration off
+- Shopify Admin **GraphQL** API (2026-07), OAuth 2.0 authorization code grant
+- Courier rates through the Delami widget proxy (parallel + cached);
+  GrabExpress through Grab's Express API; Google Geocoding for drop-off points
+- Local barcode (Code128 SVG) and QR generation — no external barcode services
+- Every secret lives in `.env`; `.env.example` mirrors it line for line
 
 ## Setup
 
@@ -18,32 +23,15 @@ for JNE, Ninja Xpress, and SPX. Admin backend secured with CodeIgniter Shield.
 composer install
 cp .env.example .env            # then fill in the blank secrets
 php spark migrate --all
-php spark db:seed StoreSeeder
 ADMIN_EMAIL=you@delamibrands.com ADMIN_PASSWORD='...' php spark db:seed AdminUserSeeder
 php spark serve
 ```
-
-### Shopify app (OAuth)
-
-1. Create an app in the Shopify Dev Dashboard (or Partner Dashboard) with
-   redirect URL: `{baseURL}/shopify/oauth/callback`.
-2. Put its Client ID / Client Secret in `.env` (`shopify.apiKey`, `shopify.apiSecret`).
-3. Visit `/shopify/install?shop={shop}.myshopify.com` and approve the scopes.
-   The offline token is stored **encrypted** in the `stores` table; the
-   `app/uninstalled` webhook is registered automatically.
-4. In **Admin → Stores → Edit settings**, press **Register / re-point carrier
-   service** (needs `write_shipping`). Shopify freezes the callback URL at
-   registration, so press it again whenever the URL changes — a stale one
-   shows no error, rates just stop appearing at checkout.
-5. In the same modal, press **Generate key** to issue the publishable
-   storefront key the headless cart pages send as `X-Storefront-Key`, and add
-   their origins to `cors.storefrontOrigins` in `.env`.
 
 ### Fresh database
 
 ```bash
 php spark db:fresh-sqlite            # schema + WAL + an admin login
-php spark db:fresh-sqlite --stores   # ...plus the four legacy demo stores
+php spark db:fresh-sqlite --stores   # ...plus the four brand demo stores
 ```
 
 Creates `writable/database/delami.sqlite`, runs every migration against it,
@@ -51,15 +39,27 @@ enables WAL, and seeds an admin user — printing a generated password unless
 `ADMIN_EMAIL` / `ADMIN_PASSWORD` are set. It refuses to replace an existing
 file without `--force`, and asks first in production.
 
-### Cron
+### Connect a Shopify store
 
-Nothing scheduled. `awb:track` is inactive while mock mode is on —
-the only waybills are locally invented `MOCK-` numbers no courier can report
-on. Re-enable it in `app/Commands/AwbTrack.php` once real shipments are booked:
-
-```cron
-*/15 * * * *  cd /path/to/app && php spark awb:track       # read-only tracking report
-```
+1. Create an app in the Shopify Dev Dashboard with the redirect URL
+   `{baseURL}/shopify/oauth/callback`.
+2. In **Admin → Stores**, enter the shop domain and the app's Client ID and
+   Client Secret, then **Authorize with Shopify**. The secret and the offline
+   access token are stored **encrypted** in the `stores` table, and the
+   webhooks are registered automatically.
+3. In **Edit settings** for that store:
+   - **Register / re-point carrier service** (needs `write_shipping`).
+     Shopify freezes the callback URL at registration, so press it again
+     whenever the URL changes — a stale one shows no error, rates just stop
+     appearing at checkout.
+   - **Generate key** issues the publishable storefront key that headless
+     carts send as `X-Storefront-Key`. Browser callers also need their origin
+     in `cors.storefrontOrigins` in `.env`.
+   - **Generate server key** issues the secret a storefront's own server sends
+     as `X-Storefront-Secret`, for a per-store rate limit instead of a per-IP
+     one. Shown once; only its hash is stored.
+   - **Webhooks on this site** — turn the store's order webhooks on or off for
+     this deployment, or re-register them.
 
 ### Mock AWB mode
 
@@ -75,11 +75,26 @@ who last changed it and when. Read it in code with
 An old `couriers.mockAwb` line left in a server's `.env` still applies until the
 first choice is saved in the admin; after that the admin setting wins.
 
+### Cron
+
+Nothing scheduled. `awb:track` is inactive while mock mode is on — the only
+waybills are locally invented `MOCK-` numbers no courier can report on.
+Re-enable it in `app/Commands/AwbTrack.php` once real shipments are booked:
+
+```cron
+*/15 * * * *  cd /path/to/app && php spark awb:track       # read-only tracking report
+```
+
+### Tests
+
+```bash
+vendor/bin/phpunit
+```
+
 ## Order → AWB flow
 
-1. Shopper picks a rate on the headless cart page; Shopify records it on the
-   order as `shipping_line.title` / `.code`. See `mock-storefront/` for a
-   working example.
+1. The shopper picks a rate in the headless cart or at checkout; Shopify
+   records it on the order as `shipping_line.title` / `.code`.
 2. Shopify sends the order to this site through the `orders/create` and
    `orders/updated` webhooks, and it is stored in the `orders` table. That is
    the whole of `/admin/orders`: one list per store, of the orders this site
@@ -109,26 +124,40 @@ within Shopify's 60-day Order API window.
 |---|---|
 | `POST /carrier/rates/{store}?token=…` | Shopify CarrierService rate callback (subunit prices) |
 | `POST /api/storefront/rates` | Headless cart rates (publishable key header) |
+| `POST /api/storefront/geocode` | Address ↔ coordinates for a cart's drop-off pin (same key) |
 | `POST /api/storefront/track` | Order tracking JSON for a storefront (key + order number **and** email) |
 | `GET \| POST /track` | Public customer tracking page (order number **and** email) |
-| `GET /shopify/install?shop=…` | Start OAuth install |
+| `GET /shopify/install?store={id}` | Start OAuth install (launched from Admin → Stores) |
 | `GET /shopify/oauth/callback` | OAuth redirect (HMAC + state verified) |
 | `POST /shopify/webhooks/{topic}` | `orders-create`, `orders-updated`, `app-uninstalled`, GDPR topics (HMAC verified) |
 | `GET /admin` | Dashboard (Shield: admin group) |
-| `GET /admin/orders` | Orders received by webhook, per store, with AWB state; Generate AWB on paid orders |
+| `GET /admin/orders` | Orders received by webhook, per store, with AWB state |
 | `POST /admin/awb/generate/{orderId}` | Generate AWB (idempotent) + fulfill on Shopify |
 | `GET /admin/awb/print/{orderId}` | Print the label (no side effects) |
+| `GET /admin/rate-simulator` | Run the checkout rate engine by hand |
+| `POST /admin/stores/carrier/{id}` | Register or re-point the store's carrier service (asks before taking it over from another site) |
+| `POST /admin/stores/storefront-key/{id}` | Issue or rotate the store's publishable key |
+| `POST /admin/stores/server-key/{id}` | Issue or rotate the store's secret server key |
 | `POST /admin/stores/webhooks/{id}` | (Re-)register webhook topics for a store |
 | `POST /admin/stores/order-webhooks/{id}` | Turn this site's order webhooks for a store on/off (only this site's subscriptions are touched; `app/uninstalled` stays on) |
 | `GET /admin/settings`, `POST /admin/settings/courier-mode` | Mock / live courier mode |
 
-## Headless storefront flow (cart-page rate chooser)
+## Headless storefront flow
 
-1. `cartDeliveryAddressesAdd` / `cartBuyerIdentityUpdate` — set address (collect zip).
-2. Query `cart.deliveryGroups(withCarrierRates: true)` in a `@defer` fragment —
-   Shopify calls this app's CarrierService callback and streams the options.
-3. `cartSelectedDeliveryOptionsUpdate` with the chosen `deliveryOptionHandle`.
-4. Redirect to `cart.checkoutUrl` — address and selection carry into checkout.
+`docs/HEADLESS_INTEGRATION.md` is the full guide; `delami-headless` is the
+production implementation. In short:
+
+1. The cart page quotes with `POST /api/storefront/rates` — same engine as
+   checkout, so the cart price and the checkout price agree.
+2. At handoff, stamp every cart line with `_delivery_method`
+   (`standard` / `instant` / `collect`) and, for GrabExpress, `_delivery_lat` /
+   `_delivery_lng` — Shopify forwards line properties to the carrier service,
+   not cart attributes.
+3. Add the delivery address, and for GrabExpress set the `coordinates` cart
+   attribute (`"lat,lng"`), which Generate AWB books the rider from.
+4. Query `cart.deliveryGroups(withCarrierRates: true)` in a `@defer` fragment,
+   select the option with `cartSelectedDeliveryOptionsUpdate`, and redirect to
+   `cart.checkoutUrl`.
 
 ## Customer order tracking
 
@@ -136,11 +165,10 @@ Once an AWB exists, the shopper can see the courier's scans two ways:
 
 - **`/track`** — a hosted page in this app, no storefront work needed.
 - **`POST /api/storefront/track`** — JSON, for a storefront that renders the
-  timeline in its own design. Documented in `docs/HEADLESS_INTEGRATION.md` §3.3;
-  the mock storefront's "Track an order" panel is the reference implementation.
+  timeline in its own design. Documented in `docs/HEADLESS_INTEGRATION.md` §3.3.
 
-**`docs/ORDER_TRACKING.md`** is the implementation handoff: how it works, why
-tracking never fulfils, and which legacy CI3 code each part came from.
+**`docs/ORDER_TRACKING.md`** is the implementation handoff: how it works and why
+tracking never fulfils.
 
 Both require the order number (or waybill) **together with the email on the
 order**: references are short and sequential, so without the email pairing this
@@ -154,21 +182,29 @@ timeline instead, so the feature works with mock mode on (the default).
 Courier coverage: JNE (trace), Ninja (widget proxy), LJR (status table), Grab
 (delivery lookup). SPX publishes no tracking API, so it links out.
 
-## Differences vs the legacy CI3 app (intentional fixes)
+## Design rules
 
-- `total_price` returned in **subunits** (IDR ×100) per the CarrierService spec.
-- Ninja rates show Ninja's own ETD (legacy reused JNE's).
-- JNE weight tiers close the exact-boundary gaps (2.2 kg etc.).
-- AWB generation is **idempotent for every courier** (legacy re-fired JNE/Ninja
-  API calls on label reprint), and is a POST trigger rather than a GET that
-  mutates on page load.
+- `total_price` is returned in **subunits** (IDR ×100), per the CarrierService
+  spec.
+- Chargeable weight is `ceil(grams / 1000)`, minimum 1 kg — the same rule for
+  quoting and for booking, so a parcel is never declared lighter than the
+  shopper paid for.
+- Each courier shows its own delivery estimate.
+- AWB generation is **idempotent for every courier**: a waybill is never
+  re-booked, a database claim stops two presses booking two parcels, and it is
+  a POST — printing a label (a GET) never books or fulfills.
 - Courier routing reads the rate's `service_code`, not a substring of the
   shipping title.
-- Fulfillment happens **only** via the Generate AWB button; the tracking cron
-  is read-only (legacy auto-fulfilled from `track_awb`).
-- `appTimezone` is `Asia/Jakarta`, as the CI3 app was — courier pickup windows
-  are derived from the local hour.
-- Courier lookups are parallel + cached with short timeouts, so the callback
-  stays inside Shopify's time budget.
-- MD5 logins → Shield (bcrypt/argon2); public registration disabled.
-- No unauthenticated privileged endpoints; CSRF on everything stateful.
+- Fulfillment happens **only** via Generate AWB; tracking is read-only.
+- `appTimezone` is `Asia/Jakarta` — courier pickup windows are derived from the
+  local hour.
+- Courier lookups are parallel and cached, and a whole quote spends at most
+  `couriers.rateBudgetSeconds` (4.5s) on upstream calls — every call is capped at
+  what is left, parcel couriers first. A failed lookup is cached for only
+  `couriers.failureCacheTtl` (60s), so an outage cannot blank a postcode.
+- Shield passwords (bcrypt/argon2), public registration disabled, login
+  throttled, CSRF on everything stateful. Admin CDN assets are pinned with
+  Subresource Integrity.
+- Shopify's privacy webhooks act: `customers/redact` erases that customer's
+  details from their orders, `shop/redact` deletes the shop's orders and
+  credentials.

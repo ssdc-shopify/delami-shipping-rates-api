@@ -20,6 +20,12 @@ use App\Models\StoreModel;
 class ShipmentLookup
 {
     /**
+     * Most rows a reference is matched against. Two stores sharing an order
+     * number is expected; more than a handful of matches is not a shopper.
+     */
+    private const MAX_CANDIDATES = 10;
+
+    /**
      * @param array<string, mixed>|null $store when given, only shipments
      *                                         belonging to that store resolve
      *
@@ -34,28 +40,81 @@ class ShipmentLookup
             return null;
         }
 
-        $awbs   = model(AirwaybillModel::class);
-        $orders = model(OrderModel::class);
-
-        // A waybill first: it is what the shipping confirmation leads with, so
-        // it is what most shoppers will paste.
-        $awb   = $awbs->where('waybill', $reference)->first();
-        $order = null;
-
-        if ($awb === null) {
-            $order = $this->findOrderByReference($orders, $reference);
-
-            if ($order !== null) {
-                $awb = $awbs->findByOrderId($order['order_id']);
+        // Every shipment the reference could mean, and the first whose order
+        // carries this email. Order numbers are per store, so two stores can
+        // both have a #1001 — taking whichever row came first answered "not
+        // found" to the shopper whose order happened to sort second.
+        foreach ($this->candidates($reference, $store) as [$awb, $order]) {
+            $match = $this->resolve($awb, $order, $email, $store);
+            if ($match !== null) {
+                return $match;
             }
         }
 
-        if ($awb === null) {
-            return null;
+        return null;
+    }
+
+    /**
+     * The (airwaybill, order) pairs a reference could mean: a waybill first —
+     * it is what the shipping confirmation leads with — then an order number
+     * or name, within $store when the caller has one.
+     *
+     * @return list<array{0: array<string, mixed>, 1: array<string, mixed>|null}>
+     */
+    private function candidates(string $reference, ?array $store): array
+    {
+        $awbs   = model(AirwaybillModel::class);
+        $orders = model(OrderModel::class);
+        $pairs  = [];
+        $seen   = [];
+
+        foreach ($awbs->where('waybill', $reference)->findAll(self::MAX_CANDIDATES) as $awb) {
+            $seen[$awb['id']] = true;
+            $pairs[]          = [$awb, $orders->findByOrderId($awb['order_id'])];
         }
 
-        $order ??= $orders->findByOrderId($awb['order_id']);
+        foreach ($this->ordersByReference($reference, $store) as $order) {
+            $awb = $awbs->findByOrderId($order['order_id']);
+            if ($awb !== null && ! isset($seen[$awb['id']])) {
+                $seen[$awb['id']] = true;
+                $pairs[]          = [$awb, $order];
+            }
+        }
 
+        return $pairs;
+    }
+
+    /**
+     * Orders a shopper's reference could name: "#1001", "1001", or the order
+     * name exactly as Shopify prints it.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private function ordersByReference(string $reference, ?array $store): array
+    {
+        $bare  = ltrim($reference, '#');
+        $query = model(OrderModel::class)->groupStart()
+            ->whereIn('order_name', array_values(array_unique(['#' . $bare, $reference])));
+
+        if ($bare !== '' && ctype_digit($bare)) {
+            $query->orWhere('order_number', (int) $bare);
+        }
+
+        $query->groupEnd();
+
+        if ($store !== null) {
+            $query->where('store_id', $store['id']);
+        }
+
+        return $query->findAll(self::MAX_CANDIDATES);
+    }
+
+    /**
+     * One candidate, checked: the shipment and its summary when the caller may
+     * see it with this email, else null.
+     */
+    private function resolve(array $awb, ?array $order, string $email, ?array $store): ?array
+    {
         // A key for one store must not read another store's orders. Rows that
         // predate store_id carry none, and are left to the Shopify check
         // below — which is scoped to the caller's store anyway.
@@ -85,27 +144,6 @@ class ShipmentLookup
             'awb'     => $awb,
             'summary' => $this->summary($awb, $order, $live),
         ];
-    }
-
-    /**
-     * Find a local order from what the shopper typed: "#1001", "1001", or the
-     * order name exactly as Shopify prints it.
-     *
-     * @return array<string, mixed>|null
-     */
-    private function findOrderByReference(OrderModel $orders, string $reference): ?array
-    {
-        $bare = ltrim($reference, '#');
-
-        if ($bare !== '' && ctype_digit($bare)) {
-            $order = $orders->where('order_number', (int) $bare)->first();
-            if ($order !== null) {
-                return $order;
-            }
-        }
-
-        return $orders->where('order_name', '#' . $bare)->first()
-            ?? $orders->where('order_name', $reference)->first();
     }
 
     /**

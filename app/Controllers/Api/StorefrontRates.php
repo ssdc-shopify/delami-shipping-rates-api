@@ -5,7 +5,6 @@ namespace App\Controllers\Api;
 use App\Controllers\BaseController;
 use App\Libraries\Couriers\GeocodeClient;
 use App\Libraries\Shipping\RateEngine;
-use App\Models\StoreModel;
 
 /**
  * Cart-page shipping rates for headless storefronts (Hydrogen, Expo).
@@ -27,33 +26,21 @@ use App\Models\StoreModel;
  */
 class StorefrontRates extends BaseController
 {
-    /** Quotes per minute per IP. A cart page re-quotes on every edit. */
-    private const RATE_LIMIT = 60;
+    use StorefrontAccess;
 
     public function quote()
     {
-        $store = model(StoreModel::class)->findByStorefrontKey(
-            (string) $this->request->getHeaderLine('X-Storefront-Key'),
-        );
-
-        if ($store === null) {
-            return $this->fail(401, 'invalid storefront key');
+        // A cart page re-quotes on every edit; see StorefrontAccess for limits.
+        $store = $this->admitStorefront('rates');
+        if (! is_array($store)) {
+            return $store;
         }
 
-        // Throttled per store, not globally: one storefront being hammered
-        // must not stop another store's cart from quoting.
-        //
-        // The IP is hashed because it reaches a cache key, and an IPv6 address
-        // contains colons — a character the cache handler rejects outright.
-        $throttler = service('throttler');
-        $bucket    = 'rates-' . $store['id'] . '-' . md5($this->request->getIPAddress());
-
-        if ($throttler->check($bucket, self::RATE_LIMIT, MINUTE) === false) {
-            return $this->fail(429, 'too many requests')
-                ->setHeader('Retry-After', (string) $throttler->getTokenTime());
+        $payload = $this->jsonBody();
+        if ($payload === null) {
+            return $this->fail(400, 'request body must be a JSON object');
         }
 
-        $payload     = $this->request->getJSON(true);
         $destination = $payload['destination'] ?? null;
 
         if (! is_array($destination) || $destination === []) {
@@ -78,24 +65,21 @@ class StorefrontRates extends BaseController
         // and "wants instant" are not the same question.
         $method = $payload['method'] ?? null;
 
-        $grams = 0;
-        $subunits = 0;
-
         foreach ($payload['items'] as $item) {
             if (! is_array($item)) {
                 return $this->fail(400, 'each item must be an object');
             }
-            $quantity  = max(1, (int) ($item['quantity'] ?? 1));
-            $grams    += (int) ($item['grams'] ?? 0) * $quantity;
-            $subunits += (int) ($item['price'] ?? 0) * $quantity;
         }
+
+        // The same rule the checkout callback sums the basket with.
+        [$grams, $cartTotal] = RateEngine::cartFromItems($payload['items']);
 
         try {
             $rates = (new RateEngine())->quote(
                 $store,
                 $destination,
                 $grams,
-                $subunits / 100,
+                $cartTotal,
                 is_string($method) ? $method : null,
             );
         } catch (\Throwable $e) {
@@ -133,24 +117,17 @@ class StorefrontRates extends BaseController
      */
     public function geocode()
     {
-        $store = model(StoreModel::class)->findByStorefrontKey(
-            (string) $this->request->getHeaderLine('X-Storefront-Key'),
-        );
-
-        if ($store === null) {
-            return $this->fail(401, 'invalid storefront key');
+        $store = $this->admitStorefront('geocode');
+        if (! is_array($store)) {
+            return $store;
         }
 
-        $throttler = service('throttler');
-        $bucket    = 'geocode-' . $store['id'] . '-' . md5($this->request->getIPAddress());
-
-        if ($throttler->check($bucket, self::RATE_LIMIT, MINUTE) === false) {
-            return $this->fail(429, 'too many requests')
-                ->setHeader('Retry-After', (string) $throttler->getTokenTime());
+        $payload = $this->jsonBody();
+        if ($payload === null) {
+            return $this->fail(400, 'request body must be a JSON object');
         }
 
-        $payload = $this->request->getJSON(true);
-        $geo     = new GeocodeClient();
+        $geo = new GeocodeClient();
 
         $lat = $payload['lat'] ?? $payload['latitude'] ?? null;
         $lng = $payload['lng'] ?? $payload['longitude'] ?? null;
