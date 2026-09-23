@@ -15,6 +15,7 @@ use App\Libraries\Tracking\TrackingService;
 $tracking = $tracking ?? null;
 $summary  = $summary ?? [];
 $error    = $error ?? null;
+$pending  = $pending ?? false;
 
 $when = static function (?string $value, string $format = 'D, j M Y · H:i'): string {
     if ($value === null || $value === '') {
@@ -68,7 +69,40 @@ $when = static function (?string $value, string $format = 'D, j M Y · H:i'): st
     .kv strong { color: var(--ink); font-weight: 600; }
 </style>
 
-<?php if ($tracking === null): ?>
+<?php if ($pending): ?>
+
+    <?php // Found, and the email matched — but nothing has been handed to a courier yet. ?>
+    <a class="text-secondary text-decoration-none d-inline-block mb-3"
+       style="font-size: 13px;" href="<?= site_url('track') ?>">&larr; Track another order</a>
+
+    <div class="card">
+        <div class="card-body p-4">
+            <div class="d-flex justify-content-between align-items-start flex-wrap gap-2 mb-1">
+                <h1 class="h5 mb-0"><?= esc($summary['statusLabel']) ?></h1>
+                <span class="kv">Order <strong><?= esc($summary['orderName']) ?></strong></span>
+            </div>
+            <p class="kv mb-3">
+                <?php if ($summary['orderedAt'] !== ''): ?>
+                    Ordered <?= esc($when($summary['orderedAt'])) ?>
+                <?php endif; ?>
+                <?php if ($summary['destination'] !== ''): ?>
+                    · To <strong><?= esc($summary['destination']) ?></strong>
+                <?php endif; ?>
+            </p>
+            <p class="mb-0" style="font-size: 14.5px;">
+                <?php if ($summary['status'] === \App\Libraries\Tracking\ShipmentLookup::STATUS_CANCELLED): ?>
+                    This order was cancelled, so nothing will be shipped.
+                <?php elseif ($summary['status'] === \App\Libraries\Tracking\ShipmentLookup::STATUS_AWAITING_PAYMENT): ?>
+                    We are waiting for payment. Your order is prepared once it is paid.
+                <?php else: ?>
+                    We are preparing your order<?= $summary['service'] !== '' ? ' for ' . esc($summary['service']) : '' ?>.
+                    Tracking appears here as soon as it is handed to the courier.
+                <?php endif; ?>
+            </p>
+        </div>
+    </div>
+
+<?php elseif ($tracking === null): ?>
 
     <h1 class="h4 mb-1">Track your order</h1>
     <p class="text-secondary mb-4" style="font-size: 14.5px;">
@@ -161,6 +195,12 @@ $when = static function (?string $value, string $format = 'D, j M Y · H:i'): st
         </div>
     </div>
 
+    <?php if ($tracking['stale']): ?>
+        <div class="alert alert-secondary py-2" style="font-size: 13px;">
+            <?= esc($tracking['note']) ?>
+        </div>
+    <?php endif; ?>
+
     <?php if ($tracking['source'] === 'mock'): ?>
         <div class="alert alert-warning py-2" style="font-size: 13px;">
             <strong>Demo shipment.</strong> This waybill was generated in mock mode, so the
@@ -198,7 +238,7 @@ $when = static function (?string $value, string $format = 'D, j M Y · H:i'): st
         </div>
     </div>
 
-    <p class="kv mt-3 mb-0">Checked <?= esc($when($tracking['checkedAt'], 'H:i')) ?>.</p>
+    <p class="kv mt-3 mb-0">Checked with the courier <?= esc($when($tracking['checkedAt'], 'j M, H:i')) ?>.</p>
 
 <?php endif; ?>
 <?= $this->endSection() ?>

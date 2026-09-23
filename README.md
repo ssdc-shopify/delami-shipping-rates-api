@@ -161,11 +161,18 @@ production implementation. In short:
 
 ## Customer order tracking
 
-Once an AWB exists, the shopper can see the courier's scans two ways:
+A shopper can look up their order two ways:
 
 - **`/track`** — a hosted page in this app, no storefront work needed.
-- **`POST /api/storefront/track`** — JSON, for a storefront that renders the
-  timeline in its own design. Documented in `docs/HEADLESS_INTEGRATION.md` §3.3.
+- **`POST /api/storefront/track`** — JSON, for a storefront that renders it in
+  its own design. Documented in `docs/HEADLESS_INTEGRATION.md` §3.3.
+
+Before the order ships it is answered with its status — awaiting payment,
+being prepared, or cancelled — and the service chosen at checkout. Once it has
+a waybill, the courier's scans follow on one timeline. Each courier call is
+capped at `couriers.trackTimeout` (8s); when a courier that answered before
+does not answer now, its last scans are shown (kept 7 days) and marked stale,
+with the time they were fetched.
 
 **`docs/ORDER_TRACKING.md`** is the implementation handoff: how it works and why
 tracking never fulfils.

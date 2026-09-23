@@ -71,6 +71,17 @@ class TrackingService
     public const CACHE_TTL = 300;
 
     /**
+     * How long the last good answer is kept as a fallback, in seconds.
+     *
+     * A courier that times out or errors used to leave the shopper looking at
+     * "no scans yet" for a parcel that had them. Scans never disappear, so an
+     * empty answer after a good one means the courier is down, not that the
+     * parcel went backwards — and the last answer is shown instead, marked
+     * stale. A week comfortably outlives any delivery this app books.
+     */
+    public const LAST_KNOWN_TTL = 604800;
+
+    /**
      * Phrases that place a scan on the timeline, checked in this order.
      *
      * Order is the whole design: "RECEIVED AT SORTING CENTER" contains both a
@@ -139,14 +150,20 @@ class TrackingService
      * @return array{courier:string, courierName:string, waybill:string,
      *               trackingUrl:string, stage:string, stageLabel:string,
      *               events:list<array{at:?string, description:string, location:string, stage:string}>,
-     *               source:string, checkedAt:string, note:?string}
+     *               source:string, checkedAt:string, stale:bool, note:?string}
+     *
+     *               checkedAt is when these scans were fetched from the
+     *               courier — not when this page was drawn — and stale is true
+     *               when the courier did not answer and they are the last
+     *               ones received.
      */
     public function track(array $row, array $context = []): array
     {
         $courier = (string) ($row['courier'] ?? AirwaybillModel::COURIER_JNE);
         $waybill = (string) ($row['waybill'] ?? '');
 
-        [$events, $source, $note] = $this->collect($courier, $waybill, $row, $context);
+        $collected = $this->collect($courier, $waybill, $row, $context);
+        [$events, $source, $note] = $collected;
 
         // Newest first, and stable for scans a courier stamped to the same
         // minute — usort alone would shuffle those on every request.
@@ -161,7 +178,8 @@ class TrackingService
             'stageLabel'  => self::STAGE_LABELS[$this->overallStage($events)],
             'events'      => $events,
             'source'      => $source,
-            'checkedAt'   => date('Y-m-d H:i:s'),
+            'checkedAt'   => $collected['checkedAt'],
+            'stale'       => $collected['stale'],
             'note'        => $note,
         ];
     }
@@ -176,27 +194,30 @@ class TrackingService
     // ------------------------------------------------------------------
 
     /**
-     * @return array{0: list<array<string, mixed>>, 1: string, 2: ?string}
-     *         [events, source, note]
+     * @return array{0: list<array<string, mixed>>, 1: string, 2: ?string, checkedAt: string, stale: bool}
+     *         [events, source, note] plus when they were fetched
      */
     private function collect(string $courier, string $waybill, array $row, array $context): array
     {
+        $now = date('Y-m-d H:i:s');
+
         if ($waybill === '') {
-            return [[], 'unavailable', 'This order has no waybill yet.'];
+            return [[], 'unavailable', 'This order has no waybill yet.', 'checkedAt' => $now, 'stale' => false];
         }
 
         // Keyed on the waybill rather than the courier row so that a mock and
         // a real shipment can never share an entry.
         if (str_starts_with($waybill, 'MOCK-')) {
-            return [$this->mockEvents($courier, $row, $context), 'mock', null];
+            return [$this->mockEvents($courier, $row, $context), 'mock', null, 'checkedAt' => $now, 'stale' => false];
         }
 
-        $cacheKey = 'track_' . md5($courier . '|' . $waybill);
-        $cache    = service('cache');
-        $cached   = $cache->get($cacheKey);
+        $key    = md5($courier . '|' . $waybill);
+        $cache  = service('cache');
+        $cached = $cache->get('track_' . $key);
 
         if (is_array($cached)) {
-            return [$cached['events'], $cached['source'], $cached['note']];
+            return [$cached['events'], $cached['source'], $cached['note'],
+                'checkedAt' => $cached['checkedAt'] ?? $now, 'stale' => false];
         }
 
         $result = match ($courier) {
@@ -210,8 +231,26 @@ class TrackingService
         // Only a real answer is cached. Caching a courier outage would keep
         // showing "no scans" for five minutes after the courier recovered.
         if ($result[0] !== []) {
-            $cache->save($cacheKey, ['events' => $result[0], 'source' => $result[1], 'note' => $result[2]], self::CACHE_TTL);
+            $answer = ['events' => $result[0], 'source' => $result[1], 'note' => $result[2], 'checkedAt' => $now];
+            $cache->save('track_' . $key, $answer, self::CACHE_TTL);
+            $cache->save('track_last_' . $key, $answer, self::LAST_KNOWN_TTL);
+
+            return $result + ['checkedAt' => $now, 'stale' => false];
         }
+
+        // Nothing now, but scans before: the courier is down or slow, not the
+        // parcel. Show what it last said, and say that it is the last word.
+        $last = $cache->get('track_last_' . $key);
+
+        if (is_array($last) && ($last['events'] ?? []) !== []) {
+            $when = date('j M Y H:i', strtotime((string) $last['checkedAt']) ?: time());
+
+            return [$last['events'], $last['source'],
+                "The courier did not answer just now — these are the last scans received, at {$when}.",
+                'checkedAt' => $last['checkedAt'], 'stale' => true];
+        }
+
+        return $result + ['checkedAt' => $now, 'stale' => false];
 
         return $result;
     }
@@ -220,7 +259,7 @@ class TrackingService
     private function jneEvents(string $waybill): array
     {
         try {
-            $trace = (new JneClient($this->config))->trace($waybill);
+            $trace = $this->jne()->trace($waybill);
         } catch (\Throwable $e) {
             log_message('error', 'JNE trace failed for {awb}: {msg}', ['awb' => $waybill, 'msg' => $e->getMessage()]);
             $trace = null;
@@ -260,7 +299,7 @@ class TrackingService
     /** @return array{0: list<array<string, mixed>>, 1: string, 2: ?string} */
     private function ninjaEvents(string $waybill): array
     {
-        $client = new NinjaClient($this->config);
+        $client = $this->ninja();
 
         try {
             $history = $client->history($waybill);
@@ -316,7 +355,7 @@ class TrackingService
     {
         $events = [];
 
-        foreach ((new LjrClient($this->config))->track($waybill) as $scan) {
+        foreach ($this->ljr()->track($waybill) as $scan) {
             $text = trim((string) ($scan['statusName'] ?? $scan['status'] ?? ''));
             if ($text === '') {
                 continue;
@@ -334,7 +373,7 @@ class TrackingService
     /** @return array{0: list<array<string, mixed>>, 1: string, 2: ?string} */
     private function grabEvents(string $deliveryId): array
     {
-        $delivery = (new GrabClient($this->config))->getDelivery($deliveryId);
+        $delivery = $this->grab()->getDelivery($deliveryId);
 
         if (! is_array($delivery)) {
             return [[], 'unavailable', null];
@@ -398,6 +437,43 @@ class TrackingService
         }
 
         return $events;
+    }
+
+    // ------------------------------------------------------------------
+    // Courier clients — each capped at couriers.trackTimeout, since a
+    // shopper is waiting. Protected so a test can answer in their place.
+    // ------------------------------------------------------------------
+
+    protected function jne(): JneClient
+    {
+        $client = new JneClient($this->config);
+        $client->setTimeout((float) $this->config->trackTimeout);
+
+        return $client;
+    }
+
+    protected function ninja(): NinjaClient
+    {
+        $client = new NinjaClient($this->config);
+        $client->setTimeout((float) $this->config->trackTimeout);
+
+        return $client;
+    }
+
+    protected function ljr(): LjrClient
+    {
+        $client = new LjrClient($this->config);
+        $client->setTimeout((float) $this->config->trackTimeout);
+
+        return $client;
+    }
+
+    protected function grab(): GrabClient
+    {
+        $client = new GrabClient($this->config);
+        $client->setTimeout((float) $this->config->trackTimeout);
+
+        return $client;
     }
 
     // ------------------------------------------------------------------

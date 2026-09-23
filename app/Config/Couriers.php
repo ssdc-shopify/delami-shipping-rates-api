@@ -28,6 +28,13 @@ class Couriers extends BaseConfig
      */
     public float $rateBudgetSeconds = 4.5;
 
+    /**
+     * Seconds one courier tracking call may take. A shopper is waiting on the
+     * tracking page, and a storefront gives up on the whole lookup at about
+     * 20s, so a slow courier is cut off here and the last known scans shown.
+     */
+    public int $trackTimeout = 8;
+
     /** Cache TTL (seconds) for destination/zip lookups (stable data). */
     public int $destinationCacheTtl = 86400;
 

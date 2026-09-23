@@ -57,19 +57,29 @@ class StorefrontTracking extends BaseController
             return $this->fail(404, 'no shipment found for that reference and email');
         }
 
-        $tracking = (new TrackingService())->track(
-            $match['awb'],
-            ['destination' => $match['summary']['destination']],
-        );
+        $summary = $match['summary'];
+
+        // Only a shipped order has a parcel to trace. Before that the order is
+        // still answered — "being prepared", "awaiting payment" — with
+        // shipment null, rather than 404: the shopper's order exists.
+        $tracking = $summary['status'] === ShipmentLookup::STATUS_SHIPPED
+            ? (new TrackingService())->track($match['awb'], ['destination' => $summary['destination']])
+            : null;
 
         return $this->response->setJSON([
             'order' => [
-                'name'        => $match['summary']['orderName'],
-                'recipient'   => $match['summary']['recipient'],
-                'destination' => $match['summary']['destination'],
-                'bookedAt'    => $match['summary']['bookedAt'],
+                'name'        => $summary['orderName'],
+                // awaiting_payment | processing | shipped | cancelled
+                'status'      => $summary['status'],
+                'statusLabel' => $summary['statusLabel'],
+                'recipient'   => $summary['recipient'],
+                'destination' => $summary['destination'],
+                'service'     => $summary['service'],
+                'serviceCode' => $summary['serviceCode'],
+                'orderedAt'   => $summary['orderedAt'],
+                'bookedAt'    => $summary['bookedAt'] === '' ? null : $summary['bookedAt'],
             ],
-            'shipment' => [
+            'shipment' => $tracking === null ? null : [
                 'courier'     => $tracking['courier'],
                 'courierName' => $tracking['courierName'],
                 'waybill'     => $tracking['waybill'],
@@ -80,7 +90,10 @@ class StorefrontTracking extends BaseController
                 // say so rather than showing a demo parcel as a real one.
                 'source'      => $tracking['source'],
                 'note'        => $tracking['note'],
+                // When the courier was last asked; stale = it did not answer
+                // this time and these are the last scans it gave.
                 'checkedAt'   => $tracking['checkedAt'],
+                'stale'       => $tracking['stale'],
                 'events'      => $tracking['events'],
             ],
             // The stage vocabulary, so a storefront can render its own progress

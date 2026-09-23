@@ -20,6 +20,15 @@ class NinjaClient
     }
 
     /**
+     * Cap the tracking lookups, which go through the widget proxy. Booking
+     * (createOrder) keeps its own 30s timeout.
+     */
+    public function setTimeout(?float $seconds): void
+    {
+        $this->proxy->setTimeout($seconds);
+    }
+
+    /**
      * Create a Ninja Van order with a requested tracking number.
      *
      * @param array $shipment keys: waybill, name, phone, email, address,

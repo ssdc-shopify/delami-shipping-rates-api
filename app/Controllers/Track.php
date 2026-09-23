@@ -72,9 +72,16 @@ class Track extends BaseController
         // Splitting them would turn this form into an order-number oracle.
         if ($match === null) {
             return $this->page($reference, $email, [
-                'error' => 'We could not find a shipment for that number and email address. '
-                    . 'Check both against your order confirmation — and note that a parcel only '
-                    . 'appears here once it has been handed to the courier.',
+                'error' => 'We could not find an order for that number and email address. '
+                    . 'Check both against your order confirmation.',
+            ]);
+        }
+
+        // Not shipped yet: the order card, without a parcel to trace.
+        if ($match['summary']['status'] !== ShipmentLookup::STATUS_SHIPPED) {
+            return $this->page($reference, $email, [
+                'summary' => $match['summary'],
+                'pending' => true,
             ]);
         }
 
@@ -104,6 +111,7 @@ class Track extends BaseController
             'error'     => null,
             'summary'   => [],
             'tracking'  => null,
+            'pending'   => false,
         ], $extra));
     }
 }

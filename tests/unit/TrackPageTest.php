@@ -155,15 +155,39 @@ final class TrackPageTest extends CIUnitTestCase
     }
 
     /** An order with no waybill yet is not trackable, correct email or not. */
-    public function testAnOrderWithNoWaybillIsNotRevealed(): void
+    /**
+     * An order that has not shipped is found — for the email on it — and
+     * shown as being prepared, rather than told it does not exist. There is
+     * no parcel yet, so no tracking link either.
+     */
+    public function testAnUnshippedOrderShowsAsBeingPreparedToItsOwner(): void
     {
         model(OrderModel::class)->insert([
-            'order_id'     => 6_400_000_000_888,
-            'order_name'   => '#1002',
-            'order_number' => 1002,
-            'email'        => 'shopper@example.com',
+            'order_id'         => 6_400_000_000_888,
+            'order_name'       => '#1002',
+            'order_number'     => 1002,
+            'email'            => 'shopper@example.com',
+            'financial_status' => 'paid',
+            'shipping_title'   => 'JNE - REGULER. (Subsidi Rp 5.000)',
         ]);
 
-        $this->lookup('#1002', 'shopper@example.com')->assertDontSee('Open on');
+        $result = $this->lookup('#1002', 'shopper@example.com');
+
+        $result->assertSee('Being prepared');
+        $result->assertSee('for JNE - REGULER.');
+        $result->assertDontSee('Open on');
+    }
+
+    public function testAnUnshippedOrderIsStillHiddenFromAWrongEmail(): void
+    {
+        model(OrderModel::class)->insert([
+            'order_id' => 6_400_000_000_889, 'order_name' => '#1003', 'order_number' => 1003,
+            'email' => 'shopper@example.com', 'financial_status' => 'paid',
+        ]);
+
+        $result = $this->lookup('#1003', 'someone@example.com');
+
+        $result->assertSee('We could not find an order');
+        $result->assertDontSee('Being prepared');
     }
 }

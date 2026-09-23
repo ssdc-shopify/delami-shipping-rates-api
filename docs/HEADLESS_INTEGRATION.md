@@ -169,8 +169,13 @@ for **GrabExpress** (§5). Same header + throttle as `/rates`.
 
 ### 3.3 `POST /api/storefront/track`
 
-Where the parcel is, from the courier. Same header + throttle as `/rates`
-(15/min per store per IP), and scoped to the store the key belongs to.
+Where the order is, and — once it has shipped — where the parcel is, from
+the courier. Same headers as `/rates` (limits in §2), and scoped to the store
+the key belongs to.
+
+Every order reaches the app by webhook when it is placed, so an order that has
+**not shipped yet** is answered too: `order.status` says where it is and
+`shipment` is `null`. Only a shipped order has a parcel to trace.
 
 The **email is required and is the access control**. Order numbers are short
 and sequential, so a reference-only lookup would hand every shopper's
@@ -183,16 +188,26 @@ as an order that does not exist — do not build UI that distinguishes them.
 
 // response 200
 {
-  "order": { "name": "#1001", "recipient": "Budi Santoso",
-             "destination": "Bandung, Jawa Barat", "bookedAt": "2026-07-20 14:49:40" },
-  "shipment": {
+  "order": {
+    "name": "#1001",
+    "status": "shipped",                  // awaiting_payment | processing | shipped | cancelled
+    "statusLabel": "Shipped",             // "Awaiting payment" | "Being prepared" | "Shipped" | "Cancelled"
+    "recipient": "Budi Santoso",
+    "destination": "Bandung, Jawa Barat",
+    "service": "SPX - HEMAT",             // the rate chosen at checkout
+    "serviceCode": "BDD-SPX-HEMAT",
+    "orderedAt": "2026-07-20 10:15:00",
+    "bookedAt": "2026-07-20 14:49:40"     // handed to the courier; null until shipped
+  },
+  "shipment": {                           // null until the order has shipped
     "courier": "jne", "courierName": "JNE", "waybill": "JP1234567890",
     "trackingUrl": "https://www.jne.co.id/en/tracking/trace",
     "stage": "out_for_delivery",          // booked|picked_up|in_transit|out_for_delivery|delivered|exception
     "stageLabel": "Out for delivery",
     "source": "courier",                  // "mock" = simulated, say so in the UI
-    "note": null,                         // set when a courier has no tracking API (SPX)
-    "checkedAt": "2026-08-23 18:21:42",
+    "note": null,                         // no tracking API (SPX), or why the scans are stale
+    "checkedAt": "2026-08-23 18:21:42",   // when the courier was last asked
+    "stale": false,                       // true: the courier did not answer; these are its last scans
     "events": [                           // newest first; `at` is null if undated
       { "at": "2026-07-21 22:49:40", "description": "With delivery courier",
         "location": "Bandung", "stage": "out_for_delivery" }
@@ -206,12 +221,17 @@ as an order that does not exist — do not build UI that distinguishes them.
 |---|---|---|
 | `400` | reference or email missing | "Enter both" |
 | `401` | bad storefront key | Build/config error, not a shopper error |
-| `404` | no such shipment **or** wrong email | One message for both — never two |
+| `404` | no such order **or** wrong email | One message for both — never two |
 | `429` | throttled | Retry after `Retry-After` |
 
 Read `source`: `"mock"` means the waybill was generated in mock mode and the
 scans are invented, so a demo store does not present a fictional parcel as
-real. Render `stages` rather than hardcoding the list — the app may extend it.
+real. Read `stale`: when `true`, say the courier could not be reached and show
+`checkedAt` as the time of the scans. Render `stages` rather than hardcoding
+the list — the app may extend it.
+
+Each courier is given at most `couriers.trackTimeout` (8s) per call, so a lookup
+answers well inside a 20s client timeout even when a courier hangs.
 
 A hosted page is also available at **`GET /track`** if you would rather link
 out than build this yourself; it applies exactly the same rules.

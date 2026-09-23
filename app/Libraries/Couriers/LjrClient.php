@@ -19,9 +19,21 @@ class LjrClient
 {
     private CouriersConfig $config;
 
+    /** Per-request ceiling in seconds; null keeps the 15s default. */
+    private ?float $timeout = null;
+
     public function __construct(?CouriersConfig $config = null)
     {
         $this->config = $config ?? config('Couriers');
+    }
+
+    /**
+     * Make the next requests give up after $seconds (null: this client's
+     * default). Tracking sets it: a shopper is waiting on the page.
+     */
+    public function setTimeout(?float $seconds): void
+    {
+        $this->timeout = $seconds === null ? null : max(0.1, $seconds);
     }
 
     /**
@@ -37,7 +49,7 @@ class LjrClient
             return [];
         }
 
-        $client = single_service('curlrequest', ['timeout' => 15]);
+        $client = single_service('curlrequest', ['timeout' => $this->timeout ?? 15]);
 
         try {
             $response = $client->get(rtrim($this->config->ljrBaseUrl, '/') . '/_table/shipment_status', [

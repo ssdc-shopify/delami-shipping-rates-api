@@ -12,9 +12,21 @@ class JneClient
 {
     private CouriersConfig $config;
 
+    /** Per-request ceiling in seconds; null keeps the 30s booking default. */
+    private ?float $timeout = null;
+
     public function __construct(?CouriersConfig $config = null)
     {
         $this->config = $config ?? config(CouriersConfig::class);
+    }
+
+    /**
+     * Make the next requests give up after $seconds (null: this client's
+     * default). Tracking sets it: a shopper is waiting on the page.
+     */
+    public function setTimeout(?float $seconds): void
+    {
+        $this->timeout = $seconds === null ? null : max(0.1, $seconds);
     }
 
     /**
@@ -85,7 +97,7 @@ class JneClient
 
     private function post(string $url, array $fields): ?array
     {
-        $client = single_service('curlrequest', ['timeout' => 30]);
+        $client = single_service('curlrequest', ['timeout' => $this->timeout ?? 30]);
 
         try {
             $response = $client->post($url, [
