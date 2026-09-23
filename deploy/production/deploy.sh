@@ -16,7 +16,7 @@ readonly app_dir=/opt/delami/shipping-rates-api/production
 readonly compose_project=delami-shipping-rates-api-production
 readonly caddy_target=/etc/caddy/sites-enabled/delami-shipping-rates-api-production.caddy
 readonly private_health_url=http://127.0.0.1:15004/health
-readonly public_health_url=https://shipping-rates-api.delamibrands.com/health
+readonly public_health_url=https://rates.delamibrands.com/health
 
 if (( EUID != 0 )); then
   echo "The production deploy script must run as root." >&2
@@ -135,8 +135,8 @@ if [[ ${ci_environment,,} != production ]]; then
 fi
 
 base_url=$(env_value app.baseURL)
-if [[ ${base_url%/} != https://shipping-rates-api.delamibrands.com ]]; then
-  echo "app.baseURL must be https://shipping-rates-api.delamibrands.com/." >&2
+if [[ ${base_url%/} != https://rates.delamibrands.com ]]; then
+  echo "app.baseURL must be https://rates.delamibrands.com/." >&2
   exit 78
 fi
 

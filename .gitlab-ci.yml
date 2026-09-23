@@ -63,7 +63,7 @@ deploy_production:
   resource_group: delami-shipping-rates-api-production
   environment:
     name: production
-    url: https://shipping-rates-api.delamibrands.com
+    url: https://rates.delamibrands.com
     deployment_tier: production
   before_script:
     - apk add --no-cache openssh-client tar

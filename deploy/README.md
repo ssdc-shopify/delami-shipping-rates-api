@@ -14,7 +14,8 @@ need GitLab Container Registry, Docker-in-Docker, or a privileged runner.
 The image uses PHP 8.4 with Apache and Composer's locked production
 dependencies. Apache serves only `public/` and listens on port `8080` inside
 the container. The host exposes that container only as `127.0.0.1:15004`, and
-Caddy publishes it as `https://shipping-rates-api.delamibrands.com`.
+Caddy publishes it as `https://rates.delamibrands.com` and redirects plain HTTP
+requests to HTTPS.
 
 The CI job installs the PHP extensions required by the application, validates
 `composer.json`, installs the locked dependencies, syntax-checks `app/` and
@@ -94,7 +95,7 @@ fail, the script restores the previous image and Caddy route when possible.
 Database migrations are not automatically reversed.
 
 The deployment host must provide Docker with Compose v2, Bash, curl, Caddy,
-and systemd. DNS for `shipping-rates-api.delamibrands.com` must point at the VM
+and systemd. DNS for `rates.delamibrands.com` must point at the VM
 before the first deployment can pass its public health check.
 
 To inspect the active release on the host:
