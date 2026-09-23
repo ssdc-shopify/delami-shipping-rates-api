@@ -91,6 +91,12 @@ php_errors.log
 # Composer
 #-------------------------
 vendor/
+.composer-cache/
+
+# Deployment credentials are local-only. GitLab receives them as file-type
+# CI/CD variables, never as tracked files.
+delami-production-deploy
+delami-production-deploy.pub
 
 #-------------------------
 # IDE / Development Files

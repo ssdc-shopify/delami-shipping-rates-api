@@ -1,0 +1,68 @@
+services:
+  migrate:
+    image: ${APP_IMAGE:?APP_IMAGE must be set}
+    pull_policy: never
+    profiles: ["tools"]
+    env_file:
+      - ./stack.env
+    environment:
+      CI_ENVIRONMENT: production
+    command:
+      - sh
+      - -c
+      - php spark migrate --all && php /usr/local/bin/prepare-sqlite.php
+    volumes:
+      - writable:/var/www/html/writable
+    networks:
+      - production
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: "no"
+
+  app:
+    image: ${APP_IMAGE:?APP_IMAGE must be set}
+    pull_policy: never
+    restart: unless-stopped
+    init: true
+    env_file:
+      - ./stack.env
+    environment:
+      CI_ENVIRONMENT: production
+    ports:
+      - "127.0.0.1:15004:8080"
+    volumes:
+      - writable:/var/www/html/writable
+    networks:
+      - production
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+      - /var/run/apache2:size=8m,uid=33,gid=33,mode=0755
+      - /var/lock/apache2:size=8m,uid=33,gid=33,mode=0755
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--show-error", "--max-time", "5", "--header", "X-Forwarded-Proto: https", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 20s
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+networks:
+  production:
+
+volumes:
+  writable:

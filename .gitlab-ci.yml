@@ -1,0 +1,120 @@
+stages:
+  - validate
+  - deploy
+
+workflow:
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "production" && $CI_PIPELINE_SOURCE == "push"'
+    - when: never
+
+default:
+  tags:
+    - delami-deploy
+
+variables:
+  COMPOSER_CACHE_DIR: "$CI_PROJECT_DIR/.composer-cache"
+  PRODUCTION_DEPLOY_HOST: "110.239.91.57"
+  PRODUCTION_DEPLOY_PORT: "9022"
+  PRODUCTION_DEPLOY_USER: "root"
+
+validate:
+  stage: validate
+  image: php:8.4-cli-bookworm
+  timeout: 20m
+  cache:
+    key:
+      files:
+        - composer.lock
+    paths:
+      - .composer-cache/
+  before_script:
+    - apt-get update -qq
+    - >-
+      DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends
+      curl git unzip libicu-dev
+    - >-
+      docker-php-ext-install -j"$(nproc)"
+      intl
+    - |
+      expected_checksum="$(php -r "copy('https://composer.github.io/installer.sig', 'php://stdout');")"
+      php -r "copy('https://getcomposer.org/installer', 'composer-setup.php');"
+      actual_checksum="$(php -r "echo hash_file('sha384', 'composer-setup.php');")"
+      if [ "$expected_checksum" != "$actual_checksum" ]; then
+        echo "Composer installer checksum verification failed." >&2
+        exit 1
+      fi
+      php composer-setup.php --quiet --install-dir=/usr/local/bin --filename=composer
+      rm -f composer-setup.php
+  script:
+    - composer validate --strict
+    - composer install --prefer-dist --no-interaction --no-progress
+    - find app tests -type f -name '*.php' -print0 | xargs -0 -r -n 1 php -l
+    - vendor/bin/phpunit --no-coverage
+  interruptible: true
+
+deploy_production:
+  stage: deploy
+  image: alpine:3.22
+  timeout: 45m
+  needs:
+    - validate
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "production"'
+  resource_group: delami-shipping-rates-api-production
+  environment:
+    name: production
+    url: https://shipping-rates-api.delamibrands.com
+    deployment_tier: production
+  before_script:
+    - apk add --no-cache openssh-client tar
+    - test -f "$SSH_PRIVATE_KEY" || (echo "SSH_PRIVATE_KEY must be a file-type CI/CD variable scoped to production" >&2; exit 1)
+    - test -f "$PRODUCTION_ENV_FILE" || (echo "PRODUCTION_ENV_FILE must be a file-type CI/CD variable scoped to production" >&2; exit 1)
+    - test -s deploy/production/known_hosts.example || (echo "The tracked production known-hosts file is missing or empty" >&2; exit 1)
+    - eval "$(ssh-agent -s)"
+    - install -d -m 0700 "$HOME/.ssh"
+    - tr -d '\r' < "$SSH_PRIVATE_KEY" > "$HOME/.ssh/deploy_key"
+    - printf '\n' >> "$HOME/.ssh/deploy_key"
+    - chmod 0600 "$HOME/.ssh/deploy_key"
+    - ssh-keygen -y -f "$HOME/.ssh/deploy_key" >/dev/null || (echo "SSH_PRIVATE_KEY does not contain a valid OpenSSH private key" >&2; exit 1)
+    - ssh-add "$HOME/.ssh/deploy_key"
+    - install -m 0644 deploy/production/known_hosts.example "$HOME/.ssh/known_hosts"
+    - |
+      known_host="$PRODUCTION_DEPLOY_HOST"
+      if [ "$PRODUCTION_DEPLOY_PORT" != "22" ]; then
+        known_host="[${PRODUCTION_DEPLOY_HOST}]:${PRODUCTION_DEPLOY_PORT}"
+      fi
+      if ! ssh-keygen -F "$known_host" -f "$HOME/.ssh/known_hosts" >/dev/null; then
+        echo "The production SSH endpoint $known_host is missing from deploy/production/known_hosts.example" >&2
+        exit 1
+      fi
+  script:
+    - |
+      set -eu
+
+      local_bundle="$(mktemp -d)"
+      trap 'rm -rf -- "${local_bundle}"' EXIT
+
+      install -d -m 0755 "${local_bundle}/source"
+      tar \
+        --exclude='./.git' \
+        --exclude='./.composer-cache' \
+        --exclude='./vendor' \
+        --exclude='./build' \
+        --exclude='./.env' \
+        --exclude='./.env.*' \
+        --exclude='./delami-production-deploy' \
+        --exclude='./delami-production-deploy.pub' \
+        -cf - . | tar -xf - -C "${local_bundle}/source"
+      cp "$PRODUCTION_ENV_FILE" "${local_bundle}/stack.env"
+      chmod 0600 "${local_bundle}/stack.env"
+
+      deploy_target="${PRODUCTION_DEPLOY_USER}@${PRODUCTION_DEPLOY_HOST}"
+      remote_bundle="/tmp/delami-shipping-rates-api-production-${CI_PIPELINE_ID}-${CI_JOB_ID}"
+
+      ssh -p "$PRODUCTION_DEPLOY_PORT" "$deploy_target" \
+        "rm -rf -- '${remote_bundle}' && install -d -m 0700 '${remote_bundle}'"
+      tar -C "$local_bundle" -czf - . | \
+        ssh -p "$PRODUCTION_DEPLOY_PORT" "$deploy_target" \
+          "tar -xzf - -C '${remote_bundle}'"
+      ssh -p "$PRODUCTION_DEPLOY_PORT" "$deploy_target" \
+        "bash '${remote_bundle}/source/deploy/production/deploy.sh' '$CI_COMMIT_SHA' '${remote_bundle}'"

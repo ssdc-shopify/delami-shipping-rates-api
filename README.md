@@ -8,8 +8,8 @@ tracking. Built on CodeIgniter 4, with an admin backend secured by Shield.
 ## Stack
 
 - PHP 8.4, CodeIgniter 4.7
-- SQLite by default (`writable/database/delami.sqlite`); MySQL with
-  `DB_CONNECTION=mysql`
+- SQLite by default (`writable/database/delami.sqlite`, WAL in production);
+  MySQL remains available with `DB_CONNECTION=mysql`
 - Shield session auth (`admin` group), public registration off
 - Shopify Admin **GraphQL** API (2026-07), OAuth 2.0 authorization code grant
 - Courier rates through the Delami widget proxy (parallel + cached);
@@ -26,6 +26,13 @@ php spark migrate --all
 ADMIN_EMAIL=you@delamibrands.com ADMIN_PASSWORD='...' php spark db:seed AdminUserSeeder
 php spark serve
 ```
+
+## Production deployment
+
+Pushes to `production` are mirrored from GitHub to GitLab, validated there,
+and deployed to the production Docker/Caddy stack. There is no staging
+environment. See [`deploy/README.md`](deploy/README.md) for the runner,
+CI/CD variables, SQLite persistence, rollback, and first-release steps.
 
 ### Fresh database
 
@@ -122,6 +129,7 @@ within Shopify's 60-day Order API window.
 
 | Route | Purpose |
 |---|---|
+| `GET /health` | Readiness probe (returns healthy only when SQLite is reachable) |
 | `POST /carrier/rates/{store}?token=…` | Shopify CarrierService rate callback (subunit prices) |
 | `POST /api/storefront/rates` | Headless cart rates (publishable key header) |
 | `POST /api/storefront/geocode` | Address ↔ coordinates for a cart's drop-off pin (same key) |

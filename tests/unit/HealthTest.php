@@ -1,6 +1,7 @@
 <?php
 
 use CodeIgniter\Test\CIUnitTestCase;
+use CodeIgniter\Test\FeatureTestTrait;
 use Config\App;
 use Tests\Support\Libraries\ConfigReader;
 
@@ -9,6 +10,16 @@ use Tests\Support\Libraries\ConfigReader;
  */
 final class HealthTest extends CIUnitTestCase
 {
+    use FeatureTestTrait;
+
+    public function testHealthEndpointReportsReady(): void
+    {
+        $result = $this->get('health');
+
+        $result->assertOK();
+        $result->assertJSONExact(['status' => 'ok']);
+    }
+
     public function testIsDefinedAppPath(): void
     {
         $this->assertTrue(defined('APPPATH'));

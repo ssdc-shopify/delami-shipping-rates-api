@@ -5,6 +5,26 @@ use CodeIgniter\Router\RouteCollection;
 /** @var RouteCollection $routes */
 $routes->get('/', static fn () => redirect()->to('/admin'));
 
+// Container and public readiness probe. Keep the response generic: database
+// failures are logged server-side and never expose connection details.
+$routes->get('health', static function () {
+    $response = service('response');
+
+    try {
+        if (db_connect()->query('SELECT 1') === false) {
+            throw new RuntimeException('Database readiness query returned no result.');
+        }
+    } catch (Throwable $exception) {
+        log_message('error', 'Health check database query failed: {message}', [
+            'message' => $exception->getMessage(),
+        ]);
+
+        return $response->setStatusCode(503)->setJSON(['status' => 'unavailable']);
+    }
+
+    return $response->setJSON(['status' => 'ok']);
+});
+
 // ---------------------------------------------------------------
 // Customer order tracking (public)
 // ---------------------------------------------------------------
