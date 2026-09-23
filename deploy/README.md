@@ -65,7 +65,9 @@ The production environment is fail-closed: it must select SQLite, use the
 public HTTPS base URL, disable database debug output, retain secure cookies,
 use an HTTPS courier proxy, and supply non-placeholder encryption and carrier
 callback secrets. Replace or remove the example storefront origin before
-uploading the file.
+uploading the file. The deploy script treats HTTPS forcing, secure cookies,
+and disabled SQLite debug output as production invariants and normalizes those
+three values before validating and installing the file.
 
 Mark both variables protected and masked where GitLab permits it, and protect
 the `production` branch. The GitHub `GITLAB_PROJECT_ACCESS_TOKEN` must also be

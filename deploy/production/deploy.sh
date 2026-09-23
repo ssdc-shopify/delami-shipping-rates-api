@@ -85,6 +85,38 @@ if [[ ! -s $bundle_dir/stack.env ]]; then
   exit 78
 fi
 
+# These values are production invariants, not operator-tunable settings. A
+# PRODUCTION_ENV_FILE initially copied from .env.example contains development
+# overrides for HTTPS and cookies and omits SQLite's production debug setting.
+# Normalize them before validation so that file cannot downgrade production.
+set_env_invariant() {
+  local key=$1
+  local value=$2
+  local normalized_file
+
+  normalized_file=$(mktemp "$bundle_dir/.stack.env.XXXXXX")
+  chmod 0600 "$normalized_file"
+
+  awk -v requested="$key" '
+    /^[[:space:]]*#/ { print; next }
+    {
+      separator = index($0, "=")
+      if (separator > 0) {
+        name = substr($0, 1, separator - 1)
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", name)
+        if (name == requested) next
+      }
+      print
+    }
+  ' "$bundle_dir/stack.env" >"$normalized_file"
+  printf '%s=%s\n' "$key" "$value" >>"$normalized_file"
+  mv -f -- "$normalized_file" "$bundle_dir/stack.env"
+}
+
+set_env_invariant app.forceGlobalSecureRequests true
+set_env_invariant cookie.secure true
+set_env_invariant database.sqlite.DBDebug false
+
 env_value() {
   local key=$1
   local value
