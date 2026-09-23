@@ -4,6 +4,7 @@ namespace App\Controllers\Admin;
 
 use App\Controllers\BaseController;
 use App\Libraries\Shopify\AdminClient;
+use App\Libraries\Stores\StoreRemoval;
 use App\Models\StoreModel;
 
 class Stores extends BaseController
@@ -239,6 +240,65 @@ class Stores extends BaseController
                 ? 'Storefront key rotated for ' . $store['slug'] . ' — the previous key stopped working immediately.'
                 : 'Storefront key issued for ' . $store['slug'] . '.',
         );
+    }
+
+    /**
+     * POST /admin/stores/delete/{id}   confirm_slug={slug}
+     *
+     * Delete a store from this site: its Shopify webhooks and carrier service
+     * that point here, then its orders, airway bills and the store itself.
+     * See StoreRemoval. Cannot be undone, so the operator types the store's
+     * slug to confirm — a click alone is not enough.
+     */
+    public function delete(int $id)
+    {
+        $store = model(StoreModel::class)->find($id);
+
+        if ($store === null) {
+            return redirect()->to(site_url('admin/stores'))->with('error', 'Unknown store.');
+        }
+
+        if (trim((string) $this->request->getPost('confirm_slug')) !== $store['slug']) {
+            return redirect()->to(site_url('admin/stores'))
+                ->with('error', "Nothing was deleted — type the store's slug ({$store['slug']}) exactly to confirm.");
+        }
+
+        try {
+            $report = (new StoreRemoval())->remove($store);
+        } catch (\Throwable $e) {
+            return redirect()->to(site_url('admin/stores'))->with('error', $e->getMessage());
+        }
+
+        $message = "Store {$store['slug']} deleted, with {$report['orders']} order(s) and {$report['shipments']} airway bill(s). "
+            . self::shopifyOutcome($report['shopify']);
+
+        return redirect()->to(site_url('admin/stores'))->with(
+            isset($report['shopify']['error']) ? 'error' : 'message',
+            $message,
+        );
+    }
+
+    /** What happened on Shopify, in a sentence for the operator. */
+    private static function shopifyOutcome(array $shopify): string
+    {
+        if (isset($shopify['skipped'])) {
+            return 'It was not installed on Shopify, so nothing there was changed.';
+        }
+
+        if (isset($shopify['error'])) {
+            return "Shopify could not be reached ({$shopify['error']}), so its webhooks and carrier service may still "
+                . "point at this site — uninstall the app from the store's Shopify admin to stop them.";
+        }
+
+        $removed = count(array_filter($shopify['webhooks'], static fn ($r) => $r === 'removed'));
+        $carrier = match ($shopify['carrier']) {
+            'removed'    => 'its checkout rate callback to this site was removed',
+            'other-site' => 'its carrier service was left alone, because it belongs to another site',
+            default      => 'it had no carrier service here',
+        };
+
+        return "On Shopify, {$removed} webhook subscription(s) to this site were removed and {$carrier}. "
+            . "The app is still installed there; uninstall it from the store's Shopify admin if it should go.";
     }
 
     /**

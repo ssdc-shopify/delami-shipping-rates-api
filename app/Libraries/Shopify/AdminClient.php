@@ -254,15 +254,28 @@ class AdminClient
     /**
      * Stop Shopify sending this site the store's order webhooks.
      *
+     * @return array<string, string> topic => 'removed', 'not registered', or
+     *                               the failure message
+     */
+    public function unregisterOrderWebhooks(): array
+    {
+        return $this->unregisterWebhooks(config('Shopify')->orderWebhookTopics);
+    }
+
+    /**
+     * Delete this site's subscriptions to $topics.
+     *
      * Only subscriptions addressed to THIS site are deleted. The app's other
      * deployments — a development tunnel beside production, say — hold their
      * own subscriptions on the same store, and the list below returns theirs
      * too; deleting by topic alone would cut them off as well.
      *
+     * @param list<string> $topics keys of Config\Shopify::$webhookTopics
+     *
      * @return array<string, string> topic => 'removed', 'not registered', or
      *                               the failure message
      */
-    public function unregisterOrderWebhooks(): array
+    public function unregisterWebhooks(array $topics): array
     {
         $config = config('Shopify');
 
@@ -276,7 +289,7 @@ class AdminClient
 
         $subscriptions = $this->graphql($query, [
             'first'  => 100,
-            'topics' => $config->orderWebhookTopics,
+            'topics' => array_values($topics),
         ])['webhookSubscriptions']['nodes'] ?? [];
 
         $mutation = <<<'GQL'
@@ -290,7 +303,7 @@ class AdminClient
 
         $results = [];
 
-        foreach ($config->orderWebhookTopics as $topic) {
+        foreach ($topics as $topic) {
             $ours = rtrim(url_to('shopify-webhook', $config->webhookTopics[$topic]), '/');
 
             $results[$topic] = 'not registered';
@@ -442,6 +455,45 @@ class AdminClient
         }
 
         return [$this->updateCarrierService($existing['id'], $name, $callbackUrl), 'updated'];
+    }
+
+    /**
+     * Delete the carrier service named $name — but only if it points at the
+     * same site as $callbackUrl. Another deployment's service on the same
+     * store is its checkout; removing it from here would take that store's
+     * rates down elsewhere.
+     *
+     * @return string 'removed' | 'other-site' | 'none'
+     */
+    public function removeCarrierService(string $name, string $callbackUrl): string
+    {
+        foreach ($this->listCarrierServices() as $service) {
+            if (($service['name'] ?? '') !== $name) {
+                continue;
+            }
+
+            if (self::origin((string) ($service['callbackUrl'] ?? '')) !== self::origin($callbackUrl)) {
+                return 'other-site';
+            }
+
+            $mutation = <<<'GQL'
+            mutation DeleteCarrierService($id: ID!) {
+              carrierServiceDelete(id: $id) {
+                deletedId
+                userErrors { field message }
+              }
+            }
+            GQL;
+
+            $errors = $this->graphql($mutation, ['id' => $service['id']])['carrierServiceDelete']['userErrors'] ?? [];
+            if ($errors !== []) {
+                throw new RuntimeException('carrierServiceDelete failed: ' . json_encode($errors));
+            }
+
+            return 'removed';
+        }
+
+        return 'none';
     }
 
     /** scheme://host[:port] of a URL — which site it belongs to. */

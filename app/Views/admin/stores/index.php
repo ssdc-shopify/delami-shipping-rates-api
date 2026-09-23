@@ -300,6 +300,25 @@
                             type="submit" form="serverkey-<?= $store['id'] ?>">
                         <?= empty($store['server_key_hash']) ? 'Generate server key' : 'Rotate server key' ?>
                     </button>
+
+                    <hr class="my-4">
+
+                    <h6 class="text-uppercase text-danger small">Delete store</h6>
+                    <p class="form-text mt-0">
+                        Removes this store from this site: its <strong>orders and airway bills here</strong>,
+                        and on Shopify the webhooks and checkout rate callback that point at <strong>this
+                        site</strong> — so checkout stops offering this app's rates for the store. Another
+                        site's registrations are left alone, and the app stays installed on Shopify until the
+                        merchant uninstalls it. This cannot be undone.
+                    </p>
+                    <div class="input-group input-group-sm" style="max-width: 420px;">
+                        <input class="form-control" name="confirm_slug" form="deletestore-<?= $store['id'] ?>"
+                               placeholder="Type <?= esc($store['slug'], 'attr') ?> to confirm" autocomplete="off"
+                               aria-label="Type the store slug to confirm deletion">
+                        <button class="btn btn-outline-danger" type="submit" form="deletestore-<?= $store['id'] ?>">
+                            Delete store
+                        </button>
+                    </div>
                 </div>
 
                 <div class="modal-footer justify-content-between">
@@ -319,6 +338,11 @@
           <?php if (! empty($store['storefront_key'])): ?>
               onsubmit="return confirm('Rotate the storefront key for <?= esc($store['slug'], 'js') ?>?\n\nThe current key stops working immediately, and any Hydrogen or Expo build still using it will stop showing shipping rates.')"
           <?php endif; ?>>
+        <?= csrf_field() ?>
+    </form>
+
+    <form id="deletestore-<?= $store['id'] ?>" method="post" class="d-none"
+          action="<?= site_url('admin/stores/delete/' . $store['id']) ?>">
         <?= csrf_field() ?>
     </form>
 

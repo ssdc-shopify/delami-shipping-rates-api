@@ -88,6 +88,7 @@ $routes->group('admin', ['filter' => ['session', 'group:admin,superadmin'], 'nam
     $routes->post('stores/settings/(:num)', 'Stores::settings/$1');
     $routes->post('stores/storefront-key/(:num)', 'Stores::storefrontKey/$1');
     $routes->post('stores/server-key/(:num)', 'Stores::serverKey/$1');
+    $routes->post('stores/delete/(:num)', 'Stores::delete/$1');
     $routes->post('stores/carrier/(:num)', 'Stores::carrier/$1');
     $routes->get('rate-simulator', 'RateSimulator::index');
     $routes->get('settings', 'Settings::index');

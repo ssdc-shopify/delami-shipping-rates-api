@@ -68,6 +68,16 @@ file without `--force`, and asks first in production.
    - **Webhooks on this site** — turn the store's order webhooks on or off for
      this deployment, or re-register them.
 
+### Delete a store
+
+**Admin → Stores → Edit settings → Delete store**, confirmed by typing the
+store's slug. It removes, on Shopify, this site's webhook subscriptions and the
+carrier service if it points at this site (another site's are left alone),
+then deletes the store's orders, airway bills and the store itself in one
+transaction. Checkout stops offering this app's rates for that store. The app
+stays installed on the Shopify store until the merchant uninstalls it there.
+Cannot be undone.
+
 ### Mock AWB mode
 
 Mock mode is switched in **Admin → Settings** (stored in the `settings` table,
@@ -147,6 +157,7 @@ within Shopify's 60-day Order API window.
 | `POST /admin/stores/storefront-key/{id}` | Issue or rotate the store's publishable key |
 | `POST /admin/stores/server-key/{id}` | Issue or rotate the store's secret server key |
 | `POST /admin/stores/webhooks/{id}` | (Re-)register webhook topics for a store |
+| `POST /admin/stores/delete/{id}` | Delete a store from this site (typed-slug confirmation; see "Delete a store") |
 | `POST /admin/stores/order-webhooks/{id}` | Turn this site's order webhooks for a store on/off (only this site's subscriptions are touched; `app/uninstalled` stays on) |
 | `GET /admin/settings`, `POST /admin/settings/courier-mode` | Mock / live courier mode |
 
