@@ -3,14 +3,9 @@
 <?= $this->section('title') ?>Rate Simulator — Delami Shipping<?= $this->endSection() ?>
 
 <?= $this->section('content') ?>
-<div class="d-flex justify-content-between align-items-start gap-3 mb-1">
-    <div>
-        <h1 class="h4 mb-1">Rate Simulator</h1>
-        <p class="text-muted mb-0">Runs the exact rate engine the Shopify checkout callback uses. Courier lookups go through the widget proxy.</p>
-    </div>
-    <a class="btn btn-outline-primary btn-sm text-nowrap" href="/mock-storefront/" target="_blank" rel="noopener">
-        Open mock storefront ↗
-    </a>
+<div class="mb-1">
+    <h1 class="h4 mb-1">Rate Simulator</h1>
+    <p class="text-muted mb-0">Runs the exact rate engine the Shopify checkout callback uses. Courier lookups go through the widget proxy.</p>
 </div>
 
 <?php if ($stores === []): ?>
