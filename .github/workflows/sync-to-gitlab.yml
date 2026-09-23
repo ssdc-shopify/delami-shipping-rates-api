@@ -1,0 +1,58 @@
+name: Sync branches to GitLab
+
+on:
+  push:
+    branches:
+      - "**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gitlab-sync-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    if: ${{ github.ref_type == 'branch' && github.event.deleted == false }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out the complete Git history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Push this branch to GitLab
+        shell: bash
+        env:
+          GITLAB_PROJECT_ACCESS_TOKEN: ${{ secrets.GITLAB_PROJECT_ACCESS_TOKEN }}
+          GITLAB_REPOSITORY_URL: https://gitlab.delamibrands.com/ssdc/delami-shipping-rates-api.git
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${GITLAB_PROJECT_ACCESS_TOKEN}" ]]; then
+            echo "Missing required GitHub Actions secret: GITLAB_PROJECT_ACCESS_TOKEN" >&2
+            exit 1
+          fi
+
+          askpass_path="${RUNNER_TEMP}/gitlab-askpass.sh"
+          cat > "${askpass_path}" <<'EOF'
+          #!/usr/bin/env bash
+          case "$1" in
+            *Username*) printf '%s\n' 'oauth2' ;;
+            *Password*) printf '%s\n' "${GITLAB_PROJECT_ACCESS_TOKEN}" ;;
+            *) exit 1 ;;
+          esac
+          EOF
+          chmod 700 "${askpass_path}"
+          trap 'rm -f "${askpass_path}"' EXIT
+
+          export GIT_ASKPASS="${askpass_path}"
+          export GIT_TERMINAL_PROMPT=0
+
+          git remote add gitlab "${GITLAB_REPOSITORY_URL}"
+          git push gitlab "HEAD:${GITHUB_REF}"
