@@ -54,6 +54,13 @@ class TrackingService
         self::STAGE_EXCEPTION        => 'Needs attention',
     ];
 
+    /**
+     * A carrier this app does not trace — a tracking number another system
+     * put on the order's Shopify fulfillment. Shown by its own name, linked
+     * out, and never guessed as one of ours.
+     */
+    public const COURIER_OTHER = 'other';
+
     public const COURIER_NAMES = [
         AirwaybillModel::COURIER_JNE   => 'JNE',
         AirwaybillModel::COURIER_NINJA => 'Ninja Xpress',
@@ -171,7 +178,10 @@ class TrackingService
 
         return [
             'courier'     => $courier,
-            'courierName' => self::courierName($courier),
+            // A carrier this app does not know keeps the name Shopify gave it.
+            'courierName' => isset(self::COURIER_NAMES[$courier])
+                ? self::courierName($courier)
+                : (trim((string) ($row['courier_name'] ?? '')) ?: 'The courier'),
             'waybill'     => $waybill,
             'trackingUrl' => $this->trackingUrl($courier, $row),
             'stage'       => $this->overallStage($events),
@@ -189,6 +199,25 @@ class TrackingService
         return self::COURIER_NAMES[$courier] ?? strtoupper($courier);
     }
 
+    /**
+     * The courier a Shopify fulfillment's carrier name means — "JNE",
+     * "Ninja Xpress", "Shopee Xpress", "GrabExpress", "LJR Logistics", as this
+     * app and most others write them — or null for one this app cannot trace.
+     */
+    public static function courierFromCompany(string $company): ?string
+    {
+        $name = strtolower($company);
+
+        return match (true) {
+            str_contains($name, 'jne')                                  => AirwaybillModel::COURIER_JNE,
+            str_contains($name, 'ninja')                                => AirwaybillModel::COURIER_NINJA,
+            str_contains($name, 'shopee'), str_contains($name, 'spx')   => AirwaybillModel::COURIER_SPX,
+            str_contains($name, 'grab')                                 => AirwaybillModel::COURIER_GRAB,
+            str_contains($name, 'ljr'), str_contains($name, 'lestari')  => AirwaybillModel::COURIER_LJR,
+            default                                                     => null,
+        };
+    }
+
     // ------------------------------------------------------------------
     // Collection
     // ------------------------------------------------------------------
@@ -203,6 +232,16 @@ class TrackingService
 
         if ($waybill === '') {
             return [[], 'unavailable', 'This order has no waybill yet.', 'checkedAt' => $now, 'stale' => false];
+        }
+
+        // A carrier this app does not trace. Never fall through to one it
+        // does — the default arm below is JNE, and a number from another
+        // carrier would be asked of the wrong courier.
+        if (! isset(self::COURIER_NAMES[$courier])) {
+            $name = trim((string) ($row['courier_name'] ?? '')) ?: 'This courier';
+
+            return [[], 'unavailable', "{$name} does not share tracking with this app — use the button below to check with them.",
+                'checkedAt' => $now, 'stale' => false];
         }
 
         // Keyed on the waybill rather than the courier row so that a mock and
@@ -630,6 +669,13 @@ class TrackingService
     /** Where the shopper can see this shipment on the courier's own site. */
     private function trackingUrl(string $courier, array $row): string
     {
+        // A per-shipment link wins when one exists — Grab returns one at
+        // booking, and a Shopify fulfillment usually carries one.
+        $given = trim((string) ($row['tracking_url'] ?? ''));
+        if ($given !== '') {
+            return $given;
+        }
+
         $waybill = rawurlencode((string) ($row['waybill'] ?? ''));
 
         return match ($courier) {

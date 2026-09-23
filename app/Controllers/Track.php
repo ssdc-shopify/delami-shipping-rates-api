@@ -77,8 +77,9 @@ class Track extends BaseController
             ]);
         }
 
-        // Not shipped yet: the order card, without a parcel to trace.
-        if ($match['summary']['status'] !== ShipmentLookup::STATUS_SHIPPED) {
+        // Nothing to trace yet — not shipped, or shipped without a tracking
+        // number: the order card, saying so.
+        if (empty($match['awb']['waybill'])) {
             return $this->page($reference, $email, [
                 'summary' => $match['summary'],
                 'pending' => true,

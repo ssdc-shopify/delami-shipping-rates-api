@@ -94,9 +94,13 @@ $when = static function (?string $value, string $format = 'D, j M Y · H:i'): st
                     This order was cancelled, so nothing will be shipped.
                 <?php elseif ($summary['status'] === \App\Libraries\Tracking\ShipmentLookup::STATUS_AWAITING_PAYMENT): ?>
                     We are waiting for payment. Your order is prepared once it is paid.
+                <?php elseif ($summary['status'] === \App\Libraries\Tracking\ShipmentLookup::STATUS_SHIPPED): ?>
+                    Your order has been shipped<?= $summary['service'] !== '' ? ' with ' . esc($summary['service']) : '' ?>.
                 <?php else: ?>
                     We are preparing your order<?= $summary['service'] !== '' ? ' for ' . esc($summary['service']) : '' ?>.
-                    Tracking appears here as soon as it is handed to the courier.
+                <?php endif; ?>
+                <?php if ($summary['note'] !== ''): ?>
+                    <?= esc($summary['note']) ?>
                 <?php endif; ?>
             </p>
         </div>

@@ -173,9 +173,12 @@ Where the order is, and — once it has shipped — where the parcel is, from
 the courier. Same headers as `/rates` (limits in §2), and scoped to the store
 the key belongs to.
 
-Every order reaches the app by webhook when it is placed, so an order that has
-**not shipped yet** is answered too: `order.status` says where it is and
-`shipment` is `null`. Only a shipped order has a parcel to trace.
+An order that has **no tracking number yet** is answered too: `order.status`
+says where it is, `order.note` says "This order does not have a tracking number
+yet.", and `shipment` is `null`. The order is read from the app's own database
+or, for a store whose orders it does not receive by webhook, from Shopify; the
+tracking number is the app's airway bill or the one on the order's Shopify
+fulfillment.
 
 The **email is required and is the access control**. Order numbers are short
 and sequential, so a reference-only lookup would hand every shopper's
@@ -197,10 +200,11 @@ as an order that does not exist — do not build UI that distinguishes them.
     "service": "SPX - HEMAT",             // the rate chosen at checkout
     "serviceCode": "BDD-SPX-HEMAT",
     "orderedAt": "2026-07-20 10:15:00",
-    "bookedAt": "2026-07-20 14:49:40"     // handed to the courier; null until shipped
+    "bookedAt": "2026-07-20 14:49:40",    // handed to the courier; null without a tracking number
+    "note": null                          // "This order does not have a tracking number yet." — or null
   },
-  "shipment": {                           // null until the order has shipped
-    "courier": "jne", "courierName": "JNE", "waybill": "JP1234567890",
+  "shipment": {                           // null until the order has a tracking number
+    "courier": "jne", "courierName": "JNE", "waybill": "JP1234567890",   // courier "other": a carrier the app cannot trace — link out
     "trackingUrl": "https://www.jne.co.id/en/tracking/trace",
     "stage": "out_for_delivery",          // booked|picked_up|in_transit|out_for_delivery|delivered|exception
     "stageLabel": "Out for delivery",

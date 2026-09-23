@@ -119,6 +119,76 @@ class AdminClient
     }
 
     // ------------------------------------------------------------------
+    // Tracking — straight from Shopify, for stores whose orders this site
+    // does not receive by webhook, and for tracking numbers Shopify holds
+    // for shipments booked somewhere else.
+    // ------------------------------------------------------------------
+
+    /** What a tracking lookup needs from an order. */
+    private const TRACKING_ORDER_FIELDS = <<<'GQL'
+        legacyResourceId
+        name
+        email
+        createdAt
+        cancelledAt
+        displayFinancialStatus
+        displayFulfillmentStatus
+        shippingLine { title code }
+        shippingAddress { name city province }
+        fulfillments(first: 5) {
+          createdAt
+          trackingInfo(first: 3) { company number url }
+        }
+        GQL;
+
+    /**
+     * Orders named $name ("#1001") — a name is unique within a shop, so this
+     * is at most one order in practice. The caller still checks the name and
+     * the email exactly; the search is only how the order is found.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function ordersForTracking(string $name): array
+    {
+        $query = 'query OrdersForTracking($query: String!) { orders(first: 5, query: $query) { nodes { '
+            . self::TRACKING_ORDER_FIELDS . ' } } }';
+
+        return $this->graphql($query, ['query' => 'name:"' . str_replace('"', '', $name) . '"'])['orders']['nodes'] ?? [];
+    }
+
+    /**
+     * Orders Shopify's free-text search associates with $number — it covers
+     * fulfillment tracking numbers, which no named filter does
+     * (`tracking_number:` is silently ignored and returns every order).
+     * Free text can match other fields too, so the caller keeps only an
+     * order whose tracking number equals $number exactly.
+     *
+     * Only a plain token is sent: letters, digits, dash, underscore. Anything
+     * else could be search syntax, and is refused rather than escaped.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function ordersByTrackingNumber(string $number): array
+    {
+        if (preg_match('/^[A-Za-z0-9_-]{4,64}$/', $number) !== 1) {
+            return [];
+        }
+
+        $query = 'query OrdersByTracking($query: String!) { orders(first: 5, query: $query) { nodes { '
+            . self::TRACKING_ORDER_FIELDS . ' } } }';
+
+        return $this->graphql($query, ['query' => $number])['orders']['nodes'] ?? [];
+    }
+
+    /** One order by its id, with what a tracking lookup needs, or null. */
+    public function orderForTracking(string $legacyId): ?array
+    {
+        $query = 'query OrderForTracking($id: ID!) { order(id: $id) { ' . self::TRACKING_ORDER_FIELDS . ' } }';
+
+        return $this->graphql($query, ['id' => "gid://shopify/Order/{$legacyId}"])['order'] ?? null;
+    }
+
+    // ------------------------------------------------------------------
     // Fulfillment
     // ------------------------------------------------------------------
 

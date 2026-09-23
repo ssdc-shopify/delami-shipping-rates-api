@@ -57,6 +57,7 @@
                 <a class="nav-link" href="<?= site_url('admin') ?>">Dashboard</a>
                 <a class="nav-link" href="<?= site_url('admin/orders') ?>">Orders</a>
                 <a class="nav-link" href="<?= site_url('admin/rate-simulator') ?>">Rate Simulator</a>
+                <a class="nav-link" href="<?= site_url('admin/track-simulator') ?>">Track Simulator</a>
                 <a class="nav-link" href="<?= site_url('admin/stores') ?>">Stores</a>
                 <a class="nav-link" href="<?= site_url('admin/settings') ?>">Settings</a>
             </div>

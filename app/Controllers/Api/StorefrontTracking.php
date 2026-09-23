@@ -4,7 +4,7 @@ namespace App\Controllers\Api;
 
 use App\Controllers\BaseController;
 use App\Libraries\Tracking\ShipmentLookup;
-use App\Libraries\Tracking\TrackingService;
+use App\Libraries\Tracking\TrackingPayload;
 
 /**
  * Order tracking for headless storefronts (Hydrogen, Expo, the mock cart).
@@ -54,55 +54,12 @@ class StorefrontTracking extends BaseController
         // 404 for a wrong email exactly as for an unknown reference: any
         // difference between the two answers is itself the leak.
         if ($match === null) {
-            return $this->fail(404, 'no shipment found for that reference and email');
+            return $this->response->setStatusCode(404)->setJSON(TrackingPayload::NOT_FOUND);
         }
 
-        $summary = $match['summary'];
-
-        // Only a shipped order has a parcel to trace. Before that the order is
-        // still answered — "being prepared", "awaiting payment" — with
-        // shipment null, rather than 404: the shopper's order exists.
-        $tracking = $summary['status'] === ShipmentLookup::STATUS_SHIPPED
-            ? (new TrackingService())->track($match['awb'], ['destination' => $summary['destination']])
-            : null;
-
-        return $this->response->setJSON([
-            'order' => [
-                'name'        => $summary['orderName'],
-                // awaiting_payment | processing | shipped | cancelled
-                'status'      => $summary['status'],
-                'statusLabel' => $summary['statusLabel'],
-                'recipient'   => $summary['recipient'],
-                'destination' => $summary['destination'],
-                'service'     => $summary['service'],
-                'serviceCode' => $summary['serviceCode'],
-                'orderedAt'   => $summary['orderedAt'],
-                'bookedAt'    => $summary['bookedAt'] === '' ? null : $summary['bookedAt'],
-            ],
-            'shipment' => $tracking === null ? null : [
-                'courier'     => $tracking['courier'],
-                'courierName' => $tracking['courierName'],
-                'waybill'     => $tracking['waybill'],
-                'trackingUrl' => $tracking['trackingUrl'],
-                'stage'       => $tracking['stage'],
-                'stageLabel'  => $tracking['stageLabel'],
-                // 'mock' tells a storefront the scans are simulated, so it can
-                // say so rather than showing a demo parcel as a real one.
-                'source'      => $tracking['source'],
-                'note'        => $tracking['note'],
-                // When the courier was last asked; stale = it did not answer
-                // this time and these are the last scans it gave.
-                'checkedAt'   => $tracking['checkedAt'],
-                'stale'       => $tracking['stale'],
-                'events'      => $tracking['events'],
-            ],
-            // The stage vocabulary, so a storefront can render its own progress
-            // bar without hardcoding a list that this app might extend.
-            'stages' => array_map(
-                static fn (string $stage) => ['key' => $stage, 'label' => TrackingService::STAGE_LABELS[$stage]],
-                TrackingService::STAGE_FLOW,
-            ),
-        ]);
+        // Built by TrackingPayload, which the admin Track Simulator also uses,
+        // so the simulator shows exactly this response.
+        return $this->response->setJSON(TrackingPayload::build($match));
     }
 
     private function fail(int $status, string $message)

@@ -153,6 +153,7 @@ within Shopify's 60-day Order API window.
 | `POST /admin/awb/generate/{orderId}` | Generate AWB (idempotent) + fulfill on Shopify |
 | `GET /admin/awb/print/{orderId}` | Print the label (no side effects) |
 | `GET /admin/rate-simulator` | Run the checkout rate engine by hand |
+| `GET \| POST /admin/track-simulator` | Trace a waybill with its courier, or look an order up as a shopper and see the exact `/api/storefront/track` response |
 | `POST /admin/stores/carrier/{id}` | Register or re-point the store's carrier service (asks before taking it over from another site) |
 | `POST /admin/stores/storefront-key/{id}` | Issue or rotate the store's publishable key |
 | `POST /admin/stores/server-key/{id}` | Issue or rotate the store's secret server key |
@@ -188,10 +189,35 @@ A shopper can look up their order two ways:
 
 Before the order ships it is answered with its status — awaiting payment,
 being prepared, or cancelled — and the service chosen at checkout. Once it has
-a waybill, the courier's scans follow on one timeline. Each courier call is
+a tracking number, the courier's scans follow on one timeline; until then it
+says "This order does not have a tracking number yet."
+
+**Where the answer comes from.** Order webhooks are optional per store, so the
+local `orders` table is not the only source:
+
+1. The local database first — fast, and it keeps orders older than the 60 days
+   Shopify's Order API returns by default.
+2. Shopify's own copy of the order when the local row cannot be trusted: there
+   is none, the store's order webhooks are off on this site, or it is fulfilled
+   with no waybill here.
+3. Nothing local at all: Shopify is searched by order name, then by tracking
+   number (its free-text search covers fulfillment tracking numbers; only an
+   exact match counts) — in the key's store, or every connected store for the
+   hosted page. "No such order" is remembered for 60 seconds so guessing does
+   not drain the store's API budget.
+
+The parcel is this site's airway bill when it booked one; otherwise the courier
+and tracking number on the order's **Shopify fulfillment**, traced with that
+courier — so orders shipped by another system are tracked too. A carrier this
+app does not trace is named and linked out, never guessed. Each courier call is
 capped at `couriers.trackTimeout` (8s); when a courier that answered before
 does not answer now, its last scans are shown (kept 7 days) and marked stale,
 with the time they were fetched.
+
+**Admin → Track Simulator** runs the same code by hand: trace any waybill with
+its courier (the way to prove real tracing before going live — tick "ask the
+courier now" to skip the cache), or look an order up as a shopper in a store
+and see the exact `/api/storefront/track` status and JSON. Read-only.
 
 **`docs/ORDER_TRACKING.md`** is the implementation handoff: how it works and why
 tracking never fulfils.

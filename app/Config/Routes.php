@@ -91,6 +91,8 @@ $routes->group('admin', ['filter' => ['session', 'group:admin,superadmin'], 'nam
     $routes->post('stores/delete/(:num)', 'Stores::delete/$1');
     $routes->post('stores/carrier/(:num)', 'Stores::carrier/$1');
     $routes->get('rate-simulator', 'RateSimulator::index');
+    $routes->get('track-simulator', 'TrackSimulator::index');
+    $routes->post('track-simulator', 'TrackSimulator::run');
     $routes->get('settings', 'Settings::index');
     $routes->post('settings/courier-mode', 'Settings::courierMode');
     $routes->get('profile', 'Profile::index');
