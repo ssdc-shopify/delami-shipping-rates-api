@@ -33,7 +33,8 @@ use App\Models\StoreModel;
  *
  * WHERE THE PARCEL COMES FROM. This site's airway bill when it booked one;
  * otherwise the tracking number on the order's Shopify fulfillment, traced
- * with that courier — so a store shipped by another system is still tracked.
+ * with the courier the order's delivery method names — so a store shipped by
+ * another system is still tracked.
  *
  * Read-only throughout: it reads, and asks Shopify and couriers; it writes
  * nothing.
@@ -354,9 +355,12 @@ class ShipmentLookup
      * airway-bill-shaped row TrackingService can trace — or null when nothing
      * has been fulfilled with one.
      *
-     * The carrier name Shopify holds ("JNE", "Ninja Xpress", "Shopee Xpress")
-     * maps to the courier this app traces; one it does not know is kept by
-     * name and linked out, never guessed as one it does.
+     * The courier is the one the order's delivery method names ("JNE -
+     * REGULER.", "GRABEXPRESS - INSTANT.") — what the shopper chose, and what
+     * this app books with — because the carrier on a fulfillment is often left
+     * blank. Only when the delivery method names none does the carrier name
+     * Shopify holds decide; one this app does not know is kept by name and
+     * linked out, never guessed as one it does.
      *
      * @param string|null $number the tracking number the shopper gave, when
      *                            they looked up by it — that one is shown
@@ -374,7 +378,9 @@ class ShipmentLookup
 
                 return [
                     'order_id'     => (string) ($order['legacyResourceId'] ?? ''),
-                    'courier'      => TrackingService::courierFromCompany($company) ?? TrackingService::COURIER_OTHER,
+                    'courier'      => TrackingService::courierFromDeliveryMethod($order['shippingLine'] ?? [])
+                        ?? TrackingService::courierFromCompany($company)
+                        ?? TrackingService::COURIER_OTHER,
                     'courier_name' => $company,
                     'waybill'      => $found,
                     'tracking_url' => (string) ($info['url'] ?? ''),

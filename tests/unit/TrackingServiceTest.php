@@ -22,6 +22,37 @@ final class TrackingServiceTest extends CIUnitTestCase
     }
 
     // ------------------------------------------------------------------
+    // Courier from the delivery method
+    // ------------------------------------------------------------------
+
+    /** Titles as Shopify's Delivery method column shows them, with no service code to go on. */
+    public function testReadsTheCourierFromTheDeliveryMethodTitle(): void
+    {
+        $courier = static fn (string $title) => TrackingService::courierFromDeliveryMethod(['title' => $title, 'code' => '']);
+
+        $this->assertSame(AirwaybillModel::COURIER_GRAB, $courier('GRABEXPRESS - INSTANT.'));
+        $this->assertSame(AirwaybillModel::COURIER_JNE, $courier('JNE - REGULER. (Subsidi Rp 5.000)'));
+        $this->assertSame(AirwaybillModel::COURIER_NINJA, $courier('NINJA XPRESS - REGULER.'));
+        $this->assertSame(AirwaybillModel::COURIER_SPX, $courier('SPX - HEMAT. (FREE 5.000)'));
+        $this->assertSame(AirwaybillModel::COURIER_SPX, $courier('SPX - REGULER.'));
+
+        // Nothing names a courier at the head of these: not ours to guess.
+        $this->assertNull($courier('Shipping'));
+        $this->assertNull($courier('Shipping not required'));
+        $this->assertNull($courier('Click and Collect'));
+        $this->assertNull($courier('Kurir Toko - dikirim via JNE'), 'only the part before the dash names the courier');
+    }
+
+    public function testTheServiceCodeWinsOverTheTitle(): void
+    {
+        $this->assertSame(
+            AirwaybillModel::COURIER_NINJA,
+            TrackingService::courierFromDeliveryMethod(['title' => 'JNE - REGULER.', 'code' => 'BDD-NINJA'])
+        );
+        $this->assertNull(TrackingService::courierFromDeliveryMethod([]));
+    }
+
+    // ------------------------------------------------------------------
     // Stage inference
     // ------------------------------------------------------------------
 

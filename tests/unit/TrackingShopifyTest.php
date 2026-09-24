@@ -152,7 +152,9 @@ final class TrackingShopifyTest extends CIUnitTestCase
     public function testAnUnknownCarrierIsLinkedOutNotGuessed(): void
     {
         $this->store('alpha', false);
-        $this->shopify['alpha'] = [self::node(5001, '#1001', self::fulfilled('J&T Express', 'JT0001', 'https://jt.example/JT0001'))];
+        $this->shopify['alpha'] = [self::node(5001, '#1001', self::fulfilled('J&T Express', 'JT0001', 'https://jt.example/JT0001') + [
+            'shippingLine' => ['title' => 'Shipping', 'code' => ''],
+        ])];
 
         $body = TrackingPayload::build($this->lookup()->find('#1001', 'shopper@example.com'));
 
@@ -233,12 +235,45 @@ final class TrackingShopifyTest extends CIUnitTestCase
             'store_id' => $alpha['id'], 'order_id' => 5001, 'order_name' => '#1001', 'order_number' => 1001,
             'email' => 'shopper@example.com', 'financial_status' => 'paid', 'fulfillment_status' => 'fulfilled',
         ]);
-        $this->shopify['alpha'] = [self::node(5001, '#1001', self::fulfilled('Ninja Xpress', 'MOCK-NINJA-1'))];
+        $this->shopify['alpha'] = [self::node(5001, '#1001', self::fulfilled('Ninja Xpress', 'MOCK-NINJA-1') + [
+            'shippingLine' => ['title' => 'NINJA XPRESS - REGULER.', 'code' => 'BDD-NINJA'],
+        ])];
 
         $match = $this->lookup()->find('#1001', 'shopper@example.com');
 
         $this->assertSame('ninja', $match['awb']['courier']);
         $this->assertSame('MOCK-NINJA-1', $match['awb']['waybill']);
+    }
+
+    /** Shopify's carrier field is often blank; the delivery method still names the courier. */
+    public function testTheDeliveryMethodNamesTheCourierWhenTheCarrierIsBlank(): void
+    {
+        $this->store('alpha', false);
+        $this->shopify['alpha'] = [self::node(5001, '#1122', self::fulfilled('', 'MOCK-GRAB-951122') + [
+            'shippingLine' => ['title' => 'GRABEXPRESS - INSTANT.', 'code' => 'BDD-GRAB'],
+        ])];
+
+        $this->assertSame('grab', $this->lookup()->find('#1122', 'shopper@example.com')['awb']['courier']);
+    }
+
+    /** What the shopper chose — and what this app books with — outranks the carrier typed. */
+    public function testTheDeliveryMethodOutranksTheCarrierField(): void
+    {
+        $this->store('alpha', false);
+        $this->shopify['alpha'] = [self::node(5001, '#1001', self::fulfilled('Ninja Xpress', 'CGK0001'))];
+
+        $this->assertSame('jne', $this->lookup()->find('#1001', 'shopper@example.com')['awb']['courier']);
+    }
+
+    /** A delivery method naming no courier leaves the carrier field to decide. */
+    public function testTheCarrierFieldAnswersWhenTheDeliveryMethodNamesNone(): void
+    {
+        $this->store('alpha', false);
+        $this->shopify['alpha'] = [self::node(5001, '#1001', self::fulfilled('Ninja Xpress', 'NV0001') + [
+            'shippingLine' => ['title' => 'Shipping', 'code' => ''],
+        ])];
+
+        $this->assertSame('ninja', $this->lookup()->find('#1001', 'shopper@example.com')['awb']['courier']);
     }
 
     public function testTheHostedPageSearchesEveryConnectedStore(): void
@@ -266,7 +301,9 @@ final class TrackingShopifyTest extends CIUnitTestCase
     public function testATrackingNumberFindsTheOrderOnShopify(): void
     {
         $this->store('alpha', false);
-        $this->shopify['alpha'] = [self::node(5001, '#1001', self::fulfilled('SPX', 'SPXID069982453238', 'https://spx.co.id/en/track'))];
+        $this->shopify['alpha'] = [self::node(5001, '#1001', self::fulfilled('SPX', 'SPXID069982453238', 'https://spx.co.id/en/track') + [
+            'shippingLine' => ['title' => 'SPX - HEMAT.', 'code' => 'BDD-SPX-HEMAT'],
+        ])];
 
         $match = $this->lookup()->find('SPXID069982453238', 'shopper@example.com');
 

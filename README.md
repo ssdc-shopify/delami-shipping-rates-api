@@ -206,10 +206,14 @@ local `orders` table is not the only source:
    hosted page. "No such order" is remembered for 60 seconds so guessing does
    not drain the store's API budget.
 
-The parcel is this site's airway bill when it booked one; otherwise the courier
-and tracking number on the order's **Shopify fulfillment**, traced with that
-courier — so orders shipped by another system are tracked too. A carrier this
-app does not trace is named and linked out, never guessed. Each courier call is
+The parcel is this site's airway bill when it booked one; otherwise the
+tracking number on the order's **Shopify fulfillment** — so orders shipped by
+another system are tracked too. That number is traced with the courier the
+order's **delivery method** names: the rate's service code, else the part of
+its title before the dash (`JNE - REGULER. (Subsidi Rp 5.000)` is JNE). The
+fulfillment's carrier field, often left blank, decides only when the delivery
+method names no courier ("Shipping"). A carrier this app does not trace is
+named and linked out, never guessed. Each courier call is
 capped at `couriers.trackTimeout` (8s); when a courier that answered before
 does not answer now, its last scans are shown (kept 7 days) and marked stale,
 with the time they were fetched.

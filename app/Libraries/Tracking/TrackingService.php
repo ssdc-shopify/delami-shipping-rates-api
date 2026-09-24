@@ -200,9 +200,9 @@ class TrackingService
     }
 
     /**
-     * The courier a Shopify fulfillment's carrier name means — "JNE",
-     * "Ninja Xpress", "Shopee Xpress", "GrabExpress", "LJR Logistics", as this
-     * app and most others write them — or null for one this app cannot trace.
+     * The courier a carrier name means — "JNE", "Ninja Xpress", "Shopee
+     * Xpress", "GrabExpress", "LJR Logistics", as this app and most others
+     * write them — or null for one this app cannot trace.
      */
     public static function courierFromCompany(string $company): ?string
     {
@@ -216,6 +216,33 @@ class TrackingService
             str_contains($name, 'ljr'), str_contains($name, 'lestari')  => AirwaybillModel::COURIER_LJR,
             default                                                     => null,
         };
+    }
+
+    /**
+     * The courier an order's delivery method names — the rate the shopper
+     * picked at checkout — or null for one that names none ("Shipping",
+     * "Shipping not required", another app's rate).
+     *
+     * The rate's service code first, through the serviceMap Generate AWB books
+     * with. Then its title: RateEngine writes every one as "COURIER - SERVICE."
+     * with an optional note in brackets — "JNE - REGULER. (Subsidi Rp 5.000)",
+     * "GRABEXPRESS - INSTANT." — so the courier is what precedes the first
+     * dash, and nothing after it is read.
+     *
+     * @param array{title?: ?string, code?: ?string} $shippingLine
+     */
+    public static function courierFromDeliveryMethod(array $shippingLine): ?string
+    {
+        $code   = (string) ($shippingLine['code'] ?? '');
+        $mapped = config('Couriers')->serviceMap[$code]['courier'] ?? null;
+
+        if ($mapped !== null) {
+            return $mapped;
+        }
+
+        return preg_match('/^\s*([^-]+?)\s*-/', (string) ($shippingLine['title'] ?? ''), $m) === 1
+            ? self::courierFromCompany($m[1])
+            : null;
     }
 
     // ------------------------------------------------------------------
